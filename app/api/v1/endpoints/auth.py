@@ -9,7 +9,6 @@ from app.crud.crud_user import get_user_by_email, create_user # pyrefly: ignore 
 from app.core.security import verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES # pyrefly: ignore [missing-import]
 from app.models.user import Role # pyrefly: ignore [missing-import]
 
-
 router = APIRouter()
 
 @router.post("/signup", response_model=UserResponse)
