@@ -17,7 +17,10 @@ from app.models.payment_method import PaymentMethod # pyrefly: ignore [missing-i
 from app.api.api_router import api_router # pyrefly: ignore [missing-import]
 
 # Create all tables in the MySQL database
-Base.metadata.create_all(bind=engine)
+try:
+    Base.metadata.create_all(bind=engine)
+except Exception as e:
+    print("Database init warning:", e)
 
 app = FastAPI(title=settings.PROJECT_NAME, version=settings.VERSION)
 

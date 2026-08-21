@@ -7,7 +7,14 @@ load_dotenv()
 
 DATABASE_URL = os.getenv("DATABASE_URL", "mysql+pymysql://root:@localhost:3306/shahenshah_pos")
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True)
+connect_args = {}
+if "aivencloud.com" in DATABASE_URL or "ssl" in DATABASE_URL.lower():
+    if "?" in DATABASE_URL:
+        base_url, _ = DATABASE_URL.split("?", 1)
+        DATABASE_URL = base_url
+    connect_args = {"ssl": {"ssl_mode": "REQUIRED"}}
+
+engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
