@@ -23,6 +23,11 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30
 
+    # FBR Tier-1 POS Integration
+    FBR_MODE: str = "mock"  # Options: "mock", "sandbox", "live"
+    FBR_AUTH_TOKEN: str = ""
+    FBR_DEFAULT_POS_ID: str = "101"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

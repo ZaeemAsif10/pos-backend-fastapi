@@ -22,6 +22,7 @@ from app.modules.inventory.models import StockMovement
 from app.modules.accounting.models import ExpenseVoucher, Account
 from app.integrations.fbr.client import FBRClient
 from app.integrations.fbr.schemas import FBRInvoicePayload, FBRInvoiceItemPayload
+from app.core.config import settings
 
 
 class SalesService:
@@ -350,7 +351,10 @@ class SalesService:
             Items=fbr_items,
         )
 
-        fbr_client = FBRClient(mode=fbr_mode, pos_id=str(pos_id_int))
+        # Determine active FBR mode and authorization token
+        active_mode = settings.FBR_MODE if fbr_mode == "mock" else fbr_mode
+        active_token = settings.FBR_AUTH_TOKEN or None
+        fbr_client = FBRClient(mode=active_mode, pos_id=str(pos_id_int), auth_token=active_token)
         fbr_response = await fbr_client.post_invoice(fbr_payload)
 
         invoice.fbr_pos_id = str(pos_id_int)
