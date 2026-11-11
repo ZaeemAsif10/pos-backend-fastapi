@@ -8,3 +8,9 @@ wheels/
 
 # Virtual environments
 .venv
+.env
+.env.*
+uploads/
+*.sqlite3
+*.log
+.pytest_cache/

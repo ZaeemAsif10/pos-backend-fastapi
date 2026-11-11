@@ -426,6 +426,539 @@ class TeamService:
                 detail="Access denied. You do not have permission to delete shops or branches.",
             )
 
+    @staticmethod
+    async def verify_product_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view products and inventory."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "products:view", "products:create", "products:edit", "products:delete", "products:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view products or catalogue.",
+            )
+
+    @staticmethod
+    async def verify_product_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create products."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "products:create", "products:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to add new products.",
+            )
+
+    @staticmethod
+    async def verify_product_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to update products or prices."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "products:edit", "products:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to edit products or pricing.",
+            )
+
+    @staticmethod
+    async def verify_product_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to delete products."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "products:delete", "products:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete products.",
+            )
+
+    @staticmethod
+    async def verify_category_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view categories."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "categories:view", "categories:create", "categories:edit", "categories:delete", "products:view"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view categories.",
+            )
+
+    @staticmethod
+    async def verify_category_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create categories."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "categories:create"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create categories.",
+            )
+
+    @staticmethod
+    async def verify_category_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to edit categories."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "categories:edit"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to edit categories.",
+            )
+
+    @staticmethod
+    async def verify_category_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to delete categories."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "categories:delete"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete categories.",
+            )
+
+    @staticmethod
+    async def verify_category_manage_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to manage categories."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "categories:create", "categories:edit", "categories:delete"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to manage categories.",
+            )
+
+    @staticmethod
+    async def verify_brand_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view brands."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "brands:view", "brands:create", "brands:edit", "brands:delete", "products:view"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view brands.",
+            )
+
+    @staticmethod
+    async def verify_brand_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create brands."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "brands:create"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create brands.",
+            )
+
+    @staticmethod
+    async def verify_brand_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to edit brands."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "brands:edit"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to edit brands.",
+            )
+
+    @staticmethod
+    async def verify_brand_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to delete brands."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "brands:delete"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete brands.",
+            )
+
+    @staticmethod
+    async def verify_brand_manage_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to manage brands."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "brands:create", "brands:edit", "brands:delete"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to manage brands.",
+            )
+
+    # ----------------------------------------------------
+    # CUSTOMERS PERMISSIONS
+    # ----------------------------------------------------
+    @staticmethod
+    async def verify_customer_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view customers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "customers:view", "customers:create", "customers:edit", "customers:delete", "customers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view customers.",
+            )
+
+    @staticmethod
+    async def verify_customer_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create customers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "customers:create", "customers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create customers.",
+            )
+
+    @staticmethod
+    async def verify_customer_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to edit customers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "customers:edit", "customers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to edit customers.",
+            )
+
+    @staticmethod
+    async def verify_customer_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to delete customers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "customers:delete", "customers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete customers.",
+            )
+
+    # ----------------------------------------------------
+    # SUPPLIERS PERMISSIONS
+    # ----------------------------------------------------
+    @staticmethod
+    async def verify_supplier_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view suppliers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "suppliers:view", "suppliers:create", "suppliers:edit", "suppliers:delete", "suppliers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view suppliers.",
+            )
+
+    @staticmethod
+    async def verify_supplier_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create suppliers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "suppliers:create", "suppliers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create suppliers.",
+            )
+
+    @staticmethod
+    async def verify_supplier_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to edit suppliers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "suppliers:edit", "suppliers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to edit suppliers.",
+            )
+
+    @staticmethod
+    async def verify_supplier_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to delete suppliers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "suppliers:delete", "suppliers:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete suppliers.",
+            )
+
+    # ----------------------------------------------------
+    # DELIVERY AREAS PERMISSIONS
+    # ----------------------------------------------------
+    @staticmethod
+    async def verify_delivery_area_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view delivery areas."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "delivery_areas:view", "delivery_areas:create", "delivery_areas:edit", "delivery_areas:delete", "delivery_areas:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view delivery areas.",
+            )
+
+    @staticmethod
+    async def verify_delivery_area_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create delivery areas."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "delivery_areas:create", "delivery_areas:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create delivery areas.",
+            )
+
+    @staticmethod
+    async def verify_delivery_area_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to edit delivery areas."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "delivery_areas:edit", "delivery_areas:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to edit delivery areas.",
+            )
+
+    @staticmethod
+    async def verify_delivery_area_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to delete delivery areas."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "delivery_areas:delete", "delivery_areas:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete delivery areas.",
+            )
+
+    # ----------------------------------------------------
+    # PURCHASES PERMISSIONS
+    # ----------------------------------------------------
+    @staticmethod
+    async def verify_purchase_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view purchases."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "purchases:view", "purchases:create", "purchases:edit", "purchases:delete", "purchases:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view purchases.",
+            )
+
+    @staticmethod
+    async def verify_purchase_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create purchases."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "purchases:create", "purchases:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create purchases.",
+            )
+
+    @staticmethod
+    async def verify_purchase_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to delete purchases."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "purchases:delete", "purchases:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete purchases.",
+            )
+
+    # ----------------------------------------------------
+    # INVENTORY & STOCK PERMISSIONS
+    # ----------------------------------------------------
+    @staticmethod
+    async def verify_inventory_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view inventory."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "inventory:view", "inventory:adjust", "purchases:view", "products:view"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view inventory.",
+            )
+
+    @staticmethod
+    async def verify_inventory_adjust_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to adjust inventory."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "inventory:adjust", "inventory:manage"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to adjust inventory.",
+            )
+
+    # ----------------------------------------------------
+    # KHATA & AGING PERMISSIONS
+    # ----------------------------------------------------
+    @staticmethod
+    async def verify_aging_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view Khata Aging schedule."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "accounting:aging:view", "customers:view", "suppliers:view"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view Khata Aging schedule.",
+            )
+
+    @staticmethod
+    async def verify_aging_credit_block_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to freeze/unfreeze customer credit."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "accounting:aging:credit_block", "customers:edit"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to freeze/unfreeze customer credit.",
+            )
+
+    # ----------------------------------------------------
+    # STOCK TRANSFERS PERMISSIONS
+    # ----------------------------------------------------
+    @staticmethod
+    async def verify_stock_transfer_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to manage stock transfers."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "stock_transfers:view", "stock_transfers:create", "stock_transfers:manage", "inventory:adjust"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to manage stock transfers.",
+            )
+
+
+
 
     @staticmethod
     async def list_staff(
@@ -734,6 +1267,9 @@ class TeamService:
         module_labels = {
             "users": "Users & Staff",
             "roles": "Roles & Permissions",
+            "categories": "Category Management",
+            "brands": "Brands & Manufacturers",
+            "products": "Products & Catalogue",
             "pos": "POS Counter Billing",
             "sales": "Sales & Delivery Challans",
             "purchase": "Purchasing & Vendor Bills",
@@ -754,7 +1290,7 @@ class TeamService:
 
         result = []
         # Maintain sensible business order (active modules first)
-        order = ["users", "roles", "pos", "sales", "purchase", "inventory", "accounting", "parties", "reports", "settings"]
+        order = ["users", "roles", "categories", "brands", "products", "pos", "sales", "purchase", "inventory", "accounting", "parties", "reports", "settings"]
         for mod in order:
             if mod in groups_map:
                 result.append(
