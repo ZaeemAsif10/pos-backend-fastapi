@@ -55,7 +55,234 @@ from app.modules.auth.models import User
 
 
 
+DEFAULT_SYSTEM_COA = [
+    {"code": "1010", "name": "Cash Drawer / Counter Cash", "account_type": "asset", "sub_type": "cash", "is_system": True, "description": "Physical cash in register counter drawers"},
+    {"code": "1020", "name": "Main Bank Account", "account_type": "asset", "sub_type": "bank", "is_system": True, "description": "Primary operating bank account"},
+    {"code": "1030", "name": "Accounts Receivable (Customer Khata)", "account_type": "asset", "sub_type": "receivable", "is_system": True, "description": "Outstanding trade balances owed by credit customers"},
+    {"code": "1040", "name": "Merchandise Inventory (Stock)", "account_type": "asset", "sub_type": "current_asset", "is_system": True, "description": "Valuation of live stock and goods available for sale"},
+    {"code": "2010", "name": "Accounts Payable (Supplier Khata)", "account_type": "liability", "sub_type": "payable", "is_system": True, "description": "Trade balances owed to vendors and suppliers"},
+    {"code": "2020", "name": "Sales Tax / FBR Output Payable", "account_type": "liability", "sub_type": "tax", "is_system": True, "description": "Sales tax charged on invoices to be paid to FBR/PRA"},
+    {"code": "3010", "name": "Owner's Capital / Investment", "account_type": "equity", "sub_type": "equity", "is_system": True, "description": "Initial capital and investments into the business"},
+    {"code": "3020", "name": "Retained Earnings", "account_type": "equity", "sub_type": "equity", "is_system": True, "description": "Accumulated net profits of past accounting periods"},
+    {"code": "4010", "name": "Sales Revenue (Gross)", "account_type": "revenue", "sub_type": "operating_revenue", "is_system": True, "description": "Gross sales turnover from products and merchandise"},
+    {"code": "4020", "name": "Sales Discounts Allowed", "account_type": "revenue", "sub_type": "operating_revenue", "is_system": True, "description": "Discounts given to customers at checkout (Contra-revenue)"},
+    {"code": "5010", "name": "Cost of Goods Sold (COGS)", "account_type": "expense", "sub_type": "cogs", "is_system": True, "description": "Purchase cost of merchandise sold to buyers"},
+    {"code": "6010", "name": "Shop Rent Expense", "account_type": "expense", "sub_type": "operating_expense", "is_system": True, "description": "Premises and warehouse rental charges"},
+    {"code": "6020", "name": "Staff Salaries & Wages", "account_type": "expense", "sub_type": "operating_expense", "is_system": True, "description": "Monthly and daily employee compensation"},
+    {"code": "6030", "name": "Electricity & Utility Bills", "account_type": "expense", "sub_type": "operating_expense", "is_system": True, "description": "WAPDA/K-Electric, gas, water, and internet bills"},
+    {"code": "6040", "name": "Tea, Food & Refreshment", "account_type": "expense", "sub_type": "operating_expense", "is_system": True, "description": "Daily staff tea, food, and customer hospitality"},
+    {"code": "6050", "name": "Freight & Delivery Charges", "account_type": "expense", "sub_type": "operating_expense", "is_system": True, "description": "Transport, cargo, courier, and carriage charges"},
+    {"code": "6060", "name": "Repairs & Maintenance", "account_type": "expense", "sub_type": "operating_expense", "is_system": True, "description": "Shop, vehicle, machinery, and equipment repairs"},
+    {"code": "6090", "name": "General & Miscellaneous Expenses", "account_type": "expense", "sub_type": "operating_expense", "is_system": True, "description": "Other petty operational and sundry expenses"},
+]
+
+
 class AccountingService:
+    @staticmethod
+    async def ensure_tenant_coa_and_settings(
+        db: AsyncSession, tenant_id: int, backfill: bool = True
+    ) -> None:
+        """
+        Ensure the tenant has the core system Chart of Accounts (1010..6090),
+        default Account Mappings, and any unposted Purchase / Sale / Adjustment vouchers synced.
+        """
+        now = datetime.now(timezone.utc)
+        existing_res = await db.execute(
+            select(Account).where(Account.tenant_id == tenant_id)
+        )
+        existing_accounts = {a.code: a for a in existing_res.scalars().all()}
+        created_any = False
+
+        for item in DEFAULT_SYSTEM_COA:
+            if item["code"] not in existing_accounts:
+                acc = Account(
+                    tenant_id=tenant_id,
+                    code=item["code"],
+                    name=item["name"],
+                    account_type=item["account_type"],
+                    sub_type=item["sub_type"],
+                    currency="PKR",
+                    is_system=item["is_system"],
+                    is_active=True,
+                    description=item["description"],
+                    created_at=now,
+                )
+                db.add(acc)
+                await db.flush()
+                existing_accounts[item["code"]] = acc
+                created_any = True
+
+        # Ensure TenantAccountingSettings has default account mappings populated
+        sett_res = await db.execute(
+            select(TenantAccountingSettings).where(TenantAccountingSettings.tenant_id == tenant_id)
+        )
+        sett = sett_res.scalar_one_or_none()
+
+        cash_acc = existing_accounts.get("1010")
+        bank_acc = existing_accounts.get("1020")
+        ar_acc = existing_accounts.get("1030")
+        inv_acc = existing_accounts.get("1040")
+        ap_acc = existing_accounts.get("2010")
+        tax_acc = existing_accounts.get("2020")
+        sales_acc = existing_accounts.get("4010")
+        disc_acc = existing_accounts.get("4020")
+        cogs_acc = existing_accounts.get("5010")
+
+        payment_mappings = {
+            "cash": cash_acc.id if cash_acc else None,
+            "bank_transfer": bank_acc.id if bank_acc else None,
+            "raast": bank_acc.id if bank_acc else None,
+            "card": bank_acc.id if bank_acc else None,
+            "cheque": cash_acc.id if cash_acc else None,
+        }
+
+        if not sett:
+            sett = TenantAccountingSettings(
+                tenant_id=tenant_id,
+                base_currency="PKR",
+                financial_year_start_month=7,
+                default_sales_income_account_id=sales_acc.id if sales_acc else None,
+                default_ar_account_id=ar_acc.id if ar_acc else None,
+                default_ap_account_id=ap_acc.id if ap_acc else None,
+                default_cash_account_id=cash_acc.id if cash_acc else None,
+                default_bank_account_id=bank_acc.id if bank_acc else None,
+                default_sales_tax_account_id=tax_acc.id if tax_acc else None,
+                default_discount_account_id=disc_acc.id if disc_acc else None,
+                default_cogs_account_id=cogs_acc.id if cogs_acc else None,
+                default_inventory_asset_account_id=inv_acc.id if inv_acc else None,
+                payment_method_mappings=payment_mappings,
+                auto_posting_enabled=True,
+                created_at=now,
+            )
+            db.add(sett)
+            await db.flush()
+            created_any = True
+        else:
+            if not sett.default_sales_income_account_id and sales_acc:
+                sett.default_sales_income_account_id = sales_acc.id
+                created_any = True
+            if not sett.default_ar_account_id and ar_acc:
+                sett.default_ar_account_id = ar_acc.id
+                created_any = True
+            if not sett.default_ap_account_id and ap_acc:
+                sett.default_ap_account_id = ap_acc.id
+                created_any = True
+            if not sett.default_cash_account_id and cash_acc:
+                sett.default_cash_account_id = cash_acc.id
+                created_any = True
+            if not sett.default_bank_account_id and bank_acc:
+                sett.default_bank_account_id = bank_acc.id
+                created_any = True
+            if not sett.default_sales_tax_account_id and tax_acc:
+                sett.default_sales_tax_account_id = tax_acc.id
+                created_any = True
+            if not sett.default_discount_account_id and disc_acc:
+                sett.default_discount_account_id = disc_acc.id
+                created_any = True
+            if not sett.default_cogs_account_id and cogs_acc:
+                sett.default_cogs_account_id = cogs_acc.id
+                created_any = True
+            if not sett.default_inventory_asset_account_id and inv_acc:
+                sett.default_inventory_asset_account_id = inv_acc.id
+                created_any = True
+            if not sett.payment_method_mappings:
+                sett.payment_method_mappings = payment_mappings
+                created_any = True
+
+        if created_any:
+            await db.commit()
+
+        if not backfill:
+            return
+
+        # Backfill any unposted Purchase bills (GRN), Sales Invoices, or Stock Adjustments for this tenant
+        try:
+            from app.modules.inventory.models import Purchase, StockAdjustment
+            from app.modules.sales.models import SalesInvoice
+            from app.modules.accounting.posting import AccountingPostingEngine
+
+            # 1. Purchase Bills
+            posted_pur_res = await db.execute(
+                select(JournalEntry.source_id).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.source_type == "purchase_invoice",
+                    JournalEntry.status == "posted",
+                )
+            )
+            posted_pur_ids = {r for r in posted_pur_res.scalars().all() if r is not None}
+
+            pur_stmt = select(Purchase).where(
+                Purchase.tenant_id == tenant_id,
+                Purchase.status == "received",
+            )
+            unposted_purchases = [
+                p for p in (await db.execute(pur_stmt)).scalars().all()
+                if p.id not in posted_pur_ids
+            ]
+            if unposted_purchases:
+                for p in unposted_purchases:
+                    await AccountingPostingEngine.post_purchase_invoice(db, tenant_id, p, p.created_by_id)
+                await db.commit()
+
+            # 2. Sales Invoices
+            posted_sal_res = await db.execute(
+                select(JournalEntry.source_id).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.source_type == "sales_invoice",
+                    JournalEntry.status == "posted",
+                )
+            )
+            posted_sal_ids = {r for r in posted_sal_res.scalars().all() if r is not None}
+
+            sal_stmt = (
+                select(SalesInvoice)
+                .options(selectinload(SalesInvoice.items), selectinload(SalesInvoice.payments))
+                .where(
+                    SalesInvoice.tenant_id == tenant_id,
+                    SalesInvoice.status == "completed",
+                )
+            )
+            unposted_sales = [
+                s for s in (await db.execute(sal_stmt)).scalars().all()
+                if s.id not in posted_sal_ids
+            ]
+            if unposted_sales:
+                for s in unposted_sales:
+                    await AccountingPostingEngine.post_sales_invoice(db, tenant_id, s, s.cashier_id)
+                await db.commit()
+
+            # 3. Stock Adjustments
+            posted_adj_res = await db.execute(
+                select(JournalEntry.source_id).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.source_type == "stock_adjustment",
+                    JournalEntry.status == "posted",
+                )
+            )
+            posted_adj_ids = {r for r in posted_adj_res.scalars().all() if r is not None}
+
+            adj_stmt = (
+                select(StockAdjustment)
+                .options(selectinload(StockAdjustment.items))
+                .where(StockAdjustment.tenant_id == tenant_id)
+            )
+            unposted_adjustments = [
+                a for a in (await db.execute(adj_stmt)).scalars().all()
+                if a.id not in posted_adj_ids
+            ]
+            if unposted_adjustments:
+                for a in unposted_adjustments:
+                    await AccountingPostingEngine.post_stock_adjustment(
+                        db=db,
+                        tenant_id=tenant_id,
+                        adjustment=a,
+                        items_in=a.items,
+                        user_id=a.created_by_id,
+                    )
+                await db.commit()
+        except Exception as e:
+            print(f"[ACCOUNTING SYNC WARNING] Backfill check warning for tenant {tenant_id}: {e}")
+
     # ================= 1. Chart of Accounts (COA) Management =================
     @staticmethod
     async def list_accounts(
@@ -66,6 +293,7 @@ class AccountingService:
         active_only: bool = True,
     ) -> List[AccountItem]:
         """List all accounts for a tenant with their computed current balances."""
+        await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id)
         filters = [Account.tenant_id == tenant_id]
         if account_type:
             filters.append(Account.account_type == account_type.lower())
@@ -283,6 +511,7 @@ class AccountingService:
     @staticmethod
     async def get_tenant_settings(db: AsyncSession, tenant_id: int) -> TenantAccountingSettings:
         """Fetch or auto-provision TenantAccountingSettings for this business."""
+        await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id, backfill=False)
         stmt = (
             select(TenantAccountingSettings)
             .where(TenantAccountingSettings.tenant_id == tenant_id)
@@ -481,6 +710,7 @@ class AccountingService:
         page_size: int = 20,
     ) -> PaginatedJournalEntriesResponse:
         """Fetch paginated journal entries with full line items."""
+        await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id)
         filters = [JournalEntry.tenant_id == tenant_id]
         if branch_id:
             filters.append(JournalEntry.branch_id == branch_id)
@@ -589,6 +819,7 @@ class AccountingService:
         branch_id: Optional[int] = None,
     ) -> GeneralLedgerAccountReport:
         """Detailed chronological account statement with running balance."""
+        await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id)
         acc_stmt = select(Account).where(Account.id == account_id, Account.tenant_id == tenant_id)
         acc_res = await db.execute(acc_stmt)
         acc = acc_res.scalar_one_or_none()
@@ -698,6 +929,7 @@ class AccountingService:
         branch_id: Optional[int] = None,
     ) -> TrialBalanceResponse:
         """Generate double-entry Trial Balance verifying sum(Debit) == sum(Credit)."""
+        await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id)
         target_date = as_of_date or datetime.now(timezone.utc).date()
         dt_end = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, tzinfo=timezone.utc)
 
@@ -798,6 +1030,7 @@ class AccountingService:
         Generate IFRS/GAAP compliant Profit & Loss (Income Statement) for a specified date range.
         Revenue - COGS = Gross Profit - Operating Expenses = Net Profit.
         """
+        await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id)
         now = datetime.now(timezone.utc)
         if not from_date:
             from_date = date(now.year, now.month, 1)
@@ -953,6 +1186,7 @@ class AccountingService:
         Generate IFRS/GAAP Statement of Financial Position (Balance Sheet) as of a specific date.
         Enforces strict Accounting Golden Equation: Total Assets == Total Liabilities + Total Equity.
         """
+        await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id)
         target_date = as_of_date or datetime.now(timezone.utc).date()
         dt_end = datetime(target_date.year, target_date.month, target_date.day, 23, 59, 59, 999999, tzinfo=timezone.utc)
 
