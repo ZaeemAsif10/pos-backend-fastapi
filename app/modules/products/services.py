@@ -354,14 +354,21 @@ class ProductService:
         search: Optional[str] = None,
         category_id: Optional[int] = None,
         brand_id: Optional[int] = None,
+        branch_id: Optional[int] = None,
+        in_stock_only: Optional[bool] = None,
         stock_status: Optional[str] = None,
         is_active: Optional[bool] = None,
         page: int = 1,
         size: int = 50,
     ) -> ProductListResponse:
         """
-        List products with multi-branch stock sum, filters, and inventory stats.
+        List products with multi-branch (or single-branch) stock sum, filters, and inventory stats.
         """
+        stock_join_cond = (
+            and_(BranchStock.product_id == Product.id, BranchStock.branch_id == branch_id)
+            if branch_id
+            else (BranchStock.product_id == Product.id)
+        )
         base_query = (
             select(
                 Product,
@@ -371,7 +378,7 @@ class ProductService:
             )
             .join(Category, Product.category_id == Category.id)
             .outerjoin(Brand, Product.brand_id == Brand.id)
-            .outerjoin(BranchStock, BranchStock.product_id == Product.id)
+            .outerjoin(BranchStock, stock_join_cond)
             .where(Product.tenant_id == tenant_id)
             .group_by(Product.id, Category.name, Brand.name)
         )
@@ -394,6 +401,9 @@ class ProductService:
 
         if is_active is not None:
             base_query = base_query.where(Product.is_active.is_(is_active))
+
+        if in_stock_only:
+            base_query = base_query.having(func.coalesce(func.sum(BranchStock.quantity), 0.0) > 0)
 
         # Stock status filtering using HAVING
         if stock_status == "out_of_stock":
