@@ -44,6 +44,7 @@ class PurchaseCreate(BaseModel):
     supplier_id: int = Field(..., description="Vendor ID")
     supplier_bill_no: Optional[str] = Field(None, max_length=50, description="Supplier's physical invoice #")
     purchase_date: Optional[date] = None
+    payment_status: Optional[str] = Field(default="unpaid", max_length=50, description="Selected payment status code (e.g. paid, unpaid)")
     discount_amount: float = Field(default=0.00, ge=0)
     tax_amount: float = Field(default=0.00, ge=0)
     shipping_cost: float = Field(default=0.00, ge=0)
@@ -53,6 +54,9 @@ class PurchaseCreate(BaseModel):
 
 
 class PurchaseUpdate(BaseModel):
+    payment_status: Optional[str] = Field(None, max_length=50, description="Updated payment status code (e.g. paid, unpaid)")
+    paid_amount: Optional[float] = Field(None, ge=0)
+    supplier_bill_no: Optional[str] = Field(None, max_length=50)
     notes: Optional[str] = None
     status: Optional[str] = None  # draft, received, cancelled, returned
 
@@ -211,3 +215,41 @@ class StockAdjustmentResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+
+# ==========================================
+# PAYMENT STATUS OPTIONS SCHEMAS (CRUD)
+# ==========================================
+class PaymentStatusOptionCreate(BaseModel):
+    name: str = Field(..., min_length=2, max_length=50, description="Display label e.g. Paid, Unpaid")
+    code: Optional[str] = Field(None, max_length=50, description="Unique slug e.g. paid, unpaid")
+    accounting_type: str = Field(default="unpaid", description="'paid' (Cash/Bank), 'unpaid' (Accounts Payable), or 'partial'")
+    color: str = Field(default="emerald", max_length=20)
+    description: Optional[str] = Field(None, max_length=255)
+    is_active: bool = True
+
+
+class PaymentStatusOptionUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=2, max_length=50)
+    accounting_type: Optional[str] = None
+    color: Optional[str] = None
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class PaymentStatusOptionResponse(BaseModel):
+    id: int
+    tenant_id: int
+    name: str
+    code: str
+    accounting_type: str
+    color: str
+    description: Optional[str] = None
+    is_system: bool
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+

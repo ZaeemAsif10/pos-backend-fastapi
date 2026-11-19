@@ -851,11 +851,91 @@ class TeamService:
     ) -> None:
         """Check if user has permission to create purchases."""
         perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
-        allowed = {"*", "purchases:create", "purchases:manage"}
+        allowed = {"*", "purchases:create", "purchases:edit", "purchases:manage"}
         if not any(p in perms for p in allowed):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access denied. You do not have permission to create purchases.",
+                detail="Access denied. You do not have permission to create or update purchases.",
+            )
+
+    @staticmethod
+    async def verify_purchase_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to edit purchases / payment status."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "purchases:edit", "purchases:create", "purchases:manage", "payment_statuses:edit"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to update purchases.",
+            )
+
+    @staticmethod
+    async def verify_payment_status_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {
+            "*",
+            "payment_statuses:view",
+            "payment_statuses:create",
+            "payment_statuses:edit",
+            "payment_statuses:delete",
+            "purchases:view",
+            "purchases:create",
+            "purchases:edit",
+        }
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view payment statuses.",
+            )
+
+    @staticmethod
+    async def verify_payment_status_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "payment_statuses:create", "payment_statuses:manage", "purchases:create"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create payment statuses.",
+            )
+
+    @staticmethod
+    async def verify_payment_status_edit_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "payment_statuses:edit", "payment_statuses:manage", "purchases:edit", "purchases:create"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to edit payment statuses.",
+            )
+
+    @staticmethod
+    async def verify_payment_status_delete_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {"*", "payment_statuses:delete", "payment_statuses:manage", "purchases:delete"}
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to delete payment statuses.",
             )
 
     @staticmethod

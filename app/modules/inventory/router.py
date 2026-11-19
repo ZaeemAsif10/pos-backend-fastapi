@@ -8,6 +8,7 @@ from app.modules.auth.router import get_current_user
 from app.modules.team.services import TeamService
 from app.modules.inventory.schemas import (
     PurchaseCreate,
+    PurchaseUpdate,
     PurchaseReturnRequest,
     PurchaseResponse,
     PurchaseDetailResponse,
@@ -18,10 +19,14 @@ from app.modules.inventory.schemas import (
     StockTransferResponse,
     StockAdjustmentCreate,
     StockAdjustmentResponse,
+    PaymentStatusOptionCreate,
+    PaymentStatusOptionUpdate,
+    PaymentStatusOptionResponse,
 )
 from app.modules.inventory.services import (
     PurchaseService,
     InventoryService,
+    PaymentStatusService,
 )
 
 router = APIRouter(prefix="/tenant", tags=["Tenant Purchases, Inventory & Stock Movements"])
@@ -101,6 +106,24 @@ async def get_purchase(
     tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
     await TeamService.verify_purchase_view_permission(current_user, tenant, db)
     return await PurchaseService.get_purchase_detail(db, tenant.id, purchase_id)
+
+
+@router.put(
+    "/purchases/{purchase_id}",
+    response_model=PurchaseResponse,
+    summary="Update Purchase Bill & Payment Status",
+)
+async def update_purchase(
+    purchase_id: int,
+    payload: PurchaseUpdate,
+    tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update purchase bill (including Payment Status: Paid / Unpaid) and synchronize Double-Entry Accounting."""
+    tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
+    await TeamService.verify_purchase_edit_permission(current_user, tenant, db)
+    return await PurchaseService.update_purchase(db, tenant.id, current_user.id, purchase_id, payload)
 
 
 @router.delete(
@@ -232,3 +255,76 @@ async def create_stock_adjustment(
     tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
     await TeamService.verify_inventory_adjust_permission(current_user, tenant, db)
     return await InventoryService.create_stock_adjustment(db, tenant.id, current_user.id, payload)
+
+
+# ==========================================
+# PAYMENT STATUSES CRUD ENDPOINTS
+# ==========================================
+@router.get(
+    "/payment-statuses",
+    response_model=List[PaymentStatusOptionResponse],
+    summary="List Payment Status Options",
+)
+async def list_payment_statuses(
+    active_only: bool = Query(False, description="Filter only active payment statuses"),
+    tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List dynamic payment status options (Paid, Unpaid, custom) for the business."""
+    tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
+    await TeamService.verify_payment_status_view_permission(current_user, tenant, db)
+    return await PaymentStatusService.list_payment_statuses(db, tenant.id, active_only=active_only)
+
+
+@router.post(
+    "/payment-statuses",
+    response_model=PaymentStatusOptionResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create Payment Status Option",
+)
+async def create_payment_status(
+    payload: PaymentStatusOptionCreate,
+    tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Create a custom payment status option with accounting behavior (paid, unpaid, partial)."""
+    tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
+    await TeamService.verify_payment_status_create_permission(current_user, tenant, db)
+    return await PaymentStatusService.create_payment_status(db, tenant.id, payload)
+
+
+@router.put(
+    "/payment-statuses/{status_id}",
+    response_model=PaymentStatusOptionResponse,
+    summary="Update Payment Status Option",
+)
+async def update_payment_status(
+    status_id: int,
+    payload: PaymentStatusOptionUpdate,
+    tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a payment status option."""
+    tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
+    await TeamService.verify_payment_status_edit_permission(current_user, tenant, db)
+    return await PaymentStatusService.update_payment_status(db, tenant.id, status_id, payload)
+
+
+@router.delete(
+    "/payment-statuses/{status_id}",
+    summary="Delete Payment Status Option",
+)
+async def delete_payment_status(
+    status_id: int,
+    tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a custom payment status option."""
+    tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
+    await TeamService.verify_payment_status_delete_permission(current_user, tenant, db)
+    return await PaymentStatusService.delete_payment_status(db, tenant.id, status_id)
+

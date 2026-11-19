@@ -1,4 +1,4 @@
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Tuple
 from datetime import datetime, date, timezone
 from fastapi import HTTPException, status
 from sqlalchemy import select, func, or_, and_, update, delete
@@ -13,6 +13,7 @@ from app.modules.inventory.models import (
     StockTransferItem,
     StockAdjustment,
     StockAdjustmentItem,
+    PaymentStatusOption,
 )
 from app.modules.products.models import Product, BranchStock, ProductUOMConversion
 from app.modules.branches.models import Branch
@@ -31,7 +32,185 @@ from app.modules.inventory.schemas import (
     StockTransferResponse,
     StockAdjustmentCreate,
     StockAdjustmentResponse,
+    PaymentStatusOptionCreate,
+    PaymentStatusOptionUpdate,
+    PaymentStatusOptionResponse,
 )
+
+
+class PaymentStatusService:
+    DEFAULT_STATUSES = [
+        {
+            "name": "Paid",
+            "code": "paid",
+            "accounting_type": "paid",
+            "color": "emerald",
+            "description": "Full payment settled immediately via Cash or Bank",
+            "is_system": True,
+        },
+        {
+            "name": "Unpaid",
+            "code": "unpaid",
+            "accounting_type": "unpaid",
+            "color": "rose",
+            "description": "Credit purchase credited to Supplier Khata (Accounts Payable)",
+            "is_system": True,
+        },
+    ]
+
+    @staticmethod
+    async def ensure_defaults(db: AsyncSession, tenant_id: int) -> None:
+        res = await db.execute(
+            select(PaymentStatusOption).where(PaymentStatusOption.tenant_id == tenant_id)
+        )
+        existing = {row.code.lower(): row for row in res.scalars().all()}
+        now = datetime.now(timezone.utc)
+        added = False
+        for d in PaymentStatusService.DEFAULT_STATUSES:
+            if d["code"] not in existing:
+                opt = PaymentStatusOption(
+                    tenant_id=tenant_id,
+                    name=d["name"],
+                    code=d["code"],
+                    accounting_type=d["accounting_type"],
+                    color=d["color"],
+                    description=d["description"],
+                    is_system=d["is_system"],
+                    is_active=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                db.add(opt)
+                added = True
+        if added:
+            await db.commit()
+
+    @staticmethod
+    async def list_payment_statuses(
+        db: AsyncSession, tenant_id: int, active_only: bool = False
+    ) -> List[PaymentStatusOptionResponse]:
+        await PaymentStatusService.ensure_defaults(db, tenant_id)
+        stmt = select(PaymentStatusOption).where(PaymentStatusOption.tenant_id == tenant_id)
+        if active_only:
+            stmt = stmt.where(PaymentStatusOption.is_active.is_(True))
+        stmt = stmt.order_by(PaymentStatusOption.id.asc())
+        res = await db.execute(stmt)
+        return [PaymentStatusOptionResponse.model_validate(r) for r in res.scalars().all()]
+
+    @staticmethod
+    async def create_payment_status(
+        db: AsyncSession, tenant_id: int, payload: PaymentStatusOptionCreate
+    ) -> PaymentStatusOptionResponse:
+        await PaymentStatusService.ensure_defaults(db, tenant_id)
+        raw_code = (payload.code or payload.name).strip().lower().replace(" ", "_")
+        dup = await db.execute(
+            select(PaymentStatusOption).where(
+                PaymentStatusOption.tenant_id == tenant_id,
+                func.lower(PaymentStatusOption.code) == raw_code,
+            )
+        )
+        if dup.scalar_one_or_none():
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Payment status with code '{raw_code}' already exists.",
+            )
+        acc_type = (payload.accounting_type or "unpaid").lower()
+        if acc_type not in ("paid", "unpaid", "partial"):
+            acc_type = "unpaid"
+
+        now = datetime.now(timezone.utc)
+        opt = PaymentStatusOption(
+            tenant_id=tenant_id,
+            name=payload.name.strip(),
+            code=raw_code,
+            accounting_type=acc_type,
+            color=(payload.color or ("emerald" if acc_type == "paid" else "rose")).strip().lower(),
+            description=payload.description.strip() if payload.description else None,
+            is_system=False,
+            is_active=payload.is_active,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(opt)
+        await db.commit()
+        await db.refresh(opt)
+        return PaymentStatusOptionResponse.model_validate(opt)
+
+    @staticmethod
+    async def update_payment_status(
+        db: AsyncSession, tenant_id: int, status_id: int, payload: PaymentStatusOptionUpdate
+    ) -> PaymentStatusOptionResponse:
+        res = await db.execute(
+            select(PaymentStatusOption).where(
+                PaymentStatusOption.tenant_id == tenant_id,
+                PaymentStatusOption.id == status_id,
+            )
+        )
+        opt = res.scalar_one_or_none()
+        if not opt:
+            raise HTTPException(status_code=404, detail="Payment status not found.")
+
+        if payload.name is not None:
+            opt.name = payload.name.strip()
+        if payload.accounting_type is not None:
+            acc_type = payload.accounting_type.lower()
+            if acc_type in ("paid", "unpaid", "partial"):
+                opt.accounting_type = acc_type
+        if payload.color is not None:
+            opt.color = payload.color.strip().lower()
+        if payload.description is not None:
+            opt.description = payload.description.strip() if payload.description else None
+        if payload.is_active is not None:
+            opt.is_active = payload.is_active
+        opt.updated_at = datetime.now(timezone.utc)
+
+        await db.commit()
+        await db.refresh(opt)
+        return PaymentStatusOptionResponse.model_validate(opt)
+
+    @staticmethod
+    async def delete_payment_status(
+        db: AsyncSession, tenant_id: int, status_id: int
+    ) -> Dict[str, Any]:
+        res = await db.execute(
+            select(PaymentStatusOption).where(
+                PaymentStatusOption.tenant_id == tenant_id,
+                PaymentStatusOption.id == status_id,
+            )
+        )
+        opt = res.scalar_one_or_none()
+        if not opt:
+            raise HTTPException(status_code=404, detail="Payment status not found.")
+        if opt.is_system:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Core payment status '{opt.name}' cannot be deleted. You can edit it instead.",
+            )
+        name = opt.name
+        await db.delete(opt)
+        await db.commit()
+        return {"message": f"Payment status '{name}' deleted successfully."}
+
+    @staticmethod
+    async def resolve_behavior(
+        db: AsyncSession, tenant_id: int, status_code: Optional[str]
+    ) -> Tuple[str, str]:
+        await PaymentStatusService.ensure_defaults(db, tenant_id)
+        code_clean = (status_code or "unpaid").strip().lower()
+        res = await db.execute(
+            select(PaymentStatusOption).where(
+                PaymentStatusOption.tenant_id == tenant_id,
+                func.lower(PaymentStatusOption.code) == code_clean,
+            )
+        )
+        opt = res.scalar_one_or_none()
+        if opt:
+            return opt.code, opt.accounting_type
+        if code_clean == "paid":
+            return "paid", "paid"
+        if code_clean == "partial":
+            return "partial", "partial"
+        return code_clean or "unpaid", "unpaid"
 
 
 class PurchaseService:
@@ -225,13 +404,27 @@ class PurchaseService:
                 "row_total": row_total,
             })
 
-        # 3. Calculate Bill Totals
+        # 3. Calculate Bill Totals & Payment Status Behavior
         effective_tax_amount = round(items_tax_total, 2) if items_tax_total > 0 else float(payload.tax_amount or 0.0)
         total_amount = subtotal - payload.discount_amount + effective_tax_amount + payload.shipping_cost
-        paid_amount = min(payload.paid_amount, total_amount)
-        balance_due = max(0.0, total_amount - paid_amount)
 
-        payment_status = "paid" if balance_due <= 0 else ("partial" if paid_amount > 0 else "unpaid")
+        resolved_code, acc_behavior = await PaymentStatusService.resolve_behavior(
+            db, tenant_id, payload.payment_status
+        )
+        if acc_behavior == "paid":
+            paid_amount = total_amount
+            balance_due = 0.0
+            payment_status = resolved_code
+        elif acc_behavior == "unpaid":
+            paid_amount = 0.0
+            balance_due = total_amount
+            payment_status = resolved_code
+        else:
+            paid_amount = min(payload.paid_amount, total_amount)
+            balance_due = max(0.0, total_amount - paid_amount)
+            payment_status = resolved_code if resolved_code else (
+                "paid" if balance_due <= 0 else ("partial" if paid_amount > 0 else "unpaid")
+            )
 
         # 4. Generate Unique Invoice Number (PUR-YYYYMM-XXXX)
         now = datetime.now(timezone.utc)
@@ -355,7 +548,9 @@ class PurchaseService:
 
         # 8. Enterprise Accounting: Auto-post Double-Entry Journal Voucher (GRN)
         try:
+            from app.modules.accounting.services import AccountingService
             from app.modules.accounting.posting import AccountingPostingEngine
+            await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id, backfill=False)
             await AccountingPostingEngine.post_purchase_invoice(db, tenant_id, purchase, user_id)
         except Exception as e:
             print(f"[ACCOUNTING AUTO-POST WARNING] Failed to post purchase voucher {purchase.invoice_number}: {e}")
@@ -367,6 +562,101 @@ class PurchaseService:
         resp.branch_name = branch.name
         resp.supplier_name = supplier.company_name
         resp.items_count = len(payload.items)
+        return resp
+
+    @staticmethod
+    async def update_purchase(
+        db: AsyncSession,
+        tenant_id: int,
+        user_id: Optional[int],
+        purchase_id: int,
+        payload: PurchaseUpdate,
+    ) -> PurchaseResponse:
+        """
+        Update a purchase bill (including changing Payment Status between Paid / Unpaid / custom status)
+        and synchronize Supplier Khata payable balance + Double-Entry Journal Voucher (Trial Balance & Balance Sheet).
+        """
+        stmt = (
+            select(Purchase)
+            .options(
+                joinedload(Purchase.branch),
+                joinedload(Purchase.supplier),
+                selectinload(Purchase.items),
+            )
+            .where(Purchase.tenant_id == tenant_id, Purchase.id == purchase_id)
+        )
+        res = await db.execute(stmt)
+        p = res.scalar_one_or_none()
+        if not p:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Purchase with ID {purchase_id} was not found.",
+            )
+
+        now = datetime.now(timezone.utc)
+        old_balance_due = float(p.balance_due or 0.0)
+        total_amount = float(p.total_amount or 0.0)
+
+        if payload.supplier_bill_no is not None:
+            p.supplier_bill_no = payload.supplier_bill_no.strip() if payload.supplier_bill_no else None
+        if payload.notes is not None:
+            p.notes = payload.notes.strip() if payload.notes else None
+        if payload.status is not None:
+            p.status = payload.status
+
+        if payload.payment_status is not None or payload.paid_amount is not None:
+            target_code = payload.payment_status or p.payment_status
+            resolved_code, acc_behavior = await PaymentStatusService.resolve_behavior(
+                db, tenant_id, target_code
+            )
+            if acc_behavior == "paid":
+                new_paid = total_amount
+                new_due = 0.0
+            elif acc_behavior == "unpaid" and (payload.paid_amount is None or payload.paid_amount <= 0):
+                new_paid = 0.0
+                new_due = total_amount
+            else:
+                req_paid = float(payload.paid_amount) if payload.paid_amount is not None else float(p.paid_amount or 0.0)
+                new_paid = min(max(0.0, req_paid), total_amount)
+                new_due = max(0.0, total_amount - new_paid)
+
+            p.payment_status = resolved_code
+            p.paid_amount = round(new_paid, 2)
+            p.balance_due = round(new_due, 2)
+
+            # Adjust Supplier Khata balance by the delta in balance_due
+            if p.supplier:
+                delta_due = round(new_due - old_balance_due, 2)
+                p.supplier.current_balance = max(0.0, round(float(p.supplier.current_balance or 0.0) + delta_due, 2))
+                p.supplier.updated_at = now
+
+        p.updated_at = now
+        await db.flush()
+
+        # Re-post Double-Entry Accounting Journal Voucher to reflect updated Payment Status
+        try:
+            from app.modules.accounting.services import AccountingService
+            from app.modules.accounting.posting import AccountingPostingEngine
+
+            await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id, backfill=False)
+            await AccountingPostingEngine.void_source_voucher(
+                db,
+                tenant_id,
+                source_type="purchase_invoice",
+                source_id=p.id,
+                reason=f"Purchase bill {p.invoice_number} updated (Payment Status: {p.payment_status})",
+            )
+            await AccountingPostingEngine.post_purchase_invoice(db, tenant_id, p, user_id)
+        except Exception as e:
+            print(f"[ACCOUNTING UPDATE WARNING] Failed to re-post purchase voucher {p.invoice_number}: {e}")
+
+        await db.commit()
+        await db.refresh(p)
+
+        resp = PurchaseResponse.model_validate(p)
+        resp.branch_name = p.branch.name if p.branch else None
+        resp.supplier_name = p.supplier.company_name if p.supplier else None
+        resp.items_count = len(p.items) if p.items else 0
         return resp
 
     @staticmethod

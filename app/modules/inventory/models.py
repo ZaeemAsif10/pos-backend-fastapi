@@ -35,7 +35,7 @@ class Purchase(Base):
     purchase_date: Mapped[date] = mapped_column(Date, default=lambda: datetime.now(timezone.utc).date(), nullable=False)
     
     status: Mapped[str] = mapped_column(String(20), default="received", nullable=False)  # draft, received, cancelled
-    payment_status: Mapped[str] = mapped_column(String(20), default="unpaid", nullable=False)  # unpaid, partial, paid
+    payment_status: Mapped[str] = mapped_column(String(50), default="unpaid", nullable=False)  # unpaid, paid, or custom status code
 
     subtotal: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
     discount_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
@@ -268,3 +268,35 @@ class StockAdjustmentItem(Base):
     # Relationships
     adjustment = relationship("StockAdjustment", back_populates="items")
     product = relationship("Product")
+
+
+class PaymentStatusOption(Base):
+    """Dynamic tenant-configurable Payment Statuses (e.g., Paid, Unpaid, Partial) with accounting behavior."""
+    __tablename__ = "payment_status_options"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    name: Mapped[str] = mapped_column(String(50), nullable=False)
+    code: Mapped[str] = mapped_column(String(50), nullable=False)
+    accounting_type: Mapped[str] = mapped_column(String(20), default="unpaid", nullable=False)  # paid, unpaid, partial
+    color: Mapped[str] = mapped_column(String(20), default="emerald", nullable=False)  # emerald, rose, amber, blue
+    description: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_system: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "code", name="uq_tenant_payment_status_code"),
+    )
+
