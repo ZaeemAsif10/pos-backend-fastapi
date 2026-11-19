@@ -108,6 +108,7 @@ async def delete_category(
     summary="List Product Brands / Manufacturers",
 )
 async def list_brands(
+    category_id: Optional[int] = Query(None, description="Optional Category ID filter"),
     tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -115,7 +116,7 @@ async def list_brands(
     """Returns all brands/manufacturers with product counts."""
     tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
     await TeamService.verify_brand_view_permission(current_user, tenant, db)
-    return await BrandService.list_brands(db, tenant.id)
+    return await BrandService.list_brands(db, tenant.id, category_id=category_id)
 
 
 @router.post(

@@ -43,6 +43,7 @@ class CategoryResponse(CategoryBase):
 class BrandBase(BaseModel):
     name: str = Field(..., min_length=2, max_length=100, description="Brand name")
     code: str = Field(..., min_length=2, max_length=30, description="Unique brand code")
+    category_id: Optional[int] = Field(None, description="Connected Category ID")
     origin: Optional[str] = Field(default="Pakistan", max_length=50)
     description: Optional[str] = None
     is_active: bool = Field(default=True)
@@ -55,6 +56,7 @@ class BrandCreate(BrandBase):
 class BrandUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     code: Optional[str] = Field(None, min_length=2, max_length=30)
+    category_id: Optional[int] = None
     origin: Optional[str] = None
     description: Optional[str] = None
     is_active: Optional[bool] = None
@@ -63,6 +65,7 @@ class BrandUpdate(BaseModel):
 class BrandResponse(BrandBase):
     id: int
     tenant_id: int
+    category_name: Optional[str] = None
     product_count: Optional[int] = 0
     created_at: datetime
     updated_at: datetime

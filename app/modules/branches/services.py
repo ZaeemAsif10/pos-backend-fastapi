@@ -148,7 +148,7 @@ class BranchService:
         await EntitlementService.check_quota_limit(
             db=db,
             tenant=tenant,
-            quota_key="max_branches",
+            resource_key="max_branches",
             current_count=active_count,
             resource_name="Shops / Branches",
         )
@@ -162,7 +162,7 @@ class BranchService:
             ),
         )
         dup_res = await db.execute(dup_stmt)
-        existing_dup = dup_res.scalar_one_or_none()
+        existing_dup = dup_res.scalars().first()
         if existing_dup:
             if existing_dup.code.lower() == payload.code.strip().lower():
                 raise HTTPException(

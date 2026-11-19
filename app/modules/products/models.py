@@ -60,6 +60,9 @@ class Brand(Base):
     tenant_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
     )
+    category_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("categories.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     code: Mapped[str] = mapped_column(String(30), nullable=False)
     origin: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="Pakistan")
@@ -78,6 +81,7 @@ class Brand(Base):
 
     # Relationships
     tenant = relationship("Tenant", backref="brands")
+    category = relationship("Category", backref="brands")
     products = relationship("Product", back_populates="brand")
 
     __table_args__ = (

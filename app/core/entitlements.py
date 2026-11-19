@@ -37,19 +37,21 @@ class EntitlementService:
     async def check_quota_limit(
         db: AsyncSession,
         tenant: Tenant,
-        resource_key: str,
-        current_count: int,
-        resource_name: str,
+        resource_key: Optional[str] = None,
+        current_count: int = 0,
+        resource_name: str = "Resources",
+        quota_key: Optional[str] = None,
     ) -> None:
         """
         Enforce numeric resource count limits (e.g. max_branches, max_staff).
         Limits of -1 or >= 999 are treated as unlimited.
         All validation messages strictly in English.
         """
+        key = resource_key or quota_key or ""
         plan, limits = await EntitlementService.get_tenant_plan_and_limits(db, tenant)
         plan_name = plan.name if plan else tenant.plan_tier.replace("_", " ").title()
 
-        max_limit = limits.get(resource_key)
+        max_limit = limits.get(key)
         if max_limit is None:
             return
 

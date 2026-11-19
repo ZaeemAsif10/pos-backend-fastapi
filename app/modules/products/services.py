@@ -75,7 +75,7 @@ class CategoryService:
             ),
         )
         dup_res = await db.execute(dup_stmt)
-        existing = dup_res.scalar_one_or_none()
+        existing = dup_res.scalars().first()
         if existing:
             if existing.code.lower() == payload.code.strip().lower():
                 raise HTTPException(
@@ -171,22 +171,28 @@ class CategoryService:
 
 class BrandService:
     @staticmethod
-    async def list_brands(db: AsyncSession, tenant_id: int) -> List[BrandResponse]:
+    async def list_brands(
+        db: AsyncSession, tenant_id: int, category_id: Optional[int] = None
+    ) -> List[BrandResponse]:
         stmt = (
             select(
                 Brand,
                 func.count(Product.id).label("product_count"),
+                Category.name.label("category_name"),
             )
             .outerjoin(Product, Product.brand_id == Brand.id)
+            .outerjoin(Category, Category.id == Brand.category_id)
             .where(Brand.tenant_id == tenant_id)
-            .group_by(Brand.id)
-            .order_by(Brand.name.asc())
         )
+        if category_id is not None:
+            stmt = stmt.where(Brand.category_id == category_id)
+        stmt = stmt.group_by(Brand.id, Category.name).order_by(Brand.name.asc())
         res = await db.execute(stmt)
         results = []
-        for b, count in res.all():
+        for b, count, cat_name in res.all():
             resp = BrandResponse.model_validate(b)
             resp.product_count = count
+            resp.category_name = cat_name
             results.append(resp)
         return results
 
@@ -212,7 +218,7 @@ class BrandService:
             ),
         )
         dup_res = await db.execute(dup_stmt)
-        existing = dup_res.scalar_one_or_none()
+        existing = dup_res.scalars().first()
         if existing:
             if existing.code.lower() == payload.code.strip().lower():
                 raise HTTPException(
@@ -224,8 +230,25 @@ class BrandService:
                 detail=f"Brand named '{payload.name.strip()}' already exists.",
             )
 
+        cat_name = None
+        if payload.category_id:
+            cat_res = await db.execute(
+                select(Category).where(
+                    Category.tenant_id == tenant_id,
+                    Category.id == payload.category_id,
+                )
+            )
+            cat_obj = cat_res.scalar_one_or_none()
+            if not cat_obj:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Selected category was not found.",
+                )
+            cat_name = cat_obj.name
+
         brand = Brand(
             tenant_id=tenant_id,
+            category_id=payload.category_id,
             name=payload.name.strip(),
             code=payload.code.strip().upper(),
             origin=payload.origin.strip() if payload.origin else "Pakistan",
@@ -237,6 +260,7 @@ class BrandService:
         await db.refresh(brand)
         resp = BrandResponse.model_validate(brand)
         resp.product_count = 0
+        resp.category_name = cat_name
         return resp
 
     @staticmethod
@@ -269,6 +293,21 @@ class BrandService:
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Brand code already in use.")
             brand.code = payload.code.strip().upper()
 
+        if "category_id" in payload.model_fields_set:
+            if payload.category_id:
+                cat_res = await db.execute(
+                    select(Category).where(
+                        Category.tenant_id == tenant_id,
+                        Category.id == payload.category_id,
+                    )
+                )
+                if not cat_res.scalar_one_or_none():
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Selected category was not found.",
+                    )
+            brand.category_id = payload.category_id
+
         if payload.origin is not None:
             brand.origin = payload.origin.strip() if payload.origin else None
         if payload.description is not None:
@@ -283,8 +322,14 @@ class BrandService:
         p_count = (
             await db.execute(select(func.count(Product.id)).where(Product.brand_id == brand.id))
         ).scalar() or 0
+        cat_name = None
+        if brand.category_id:
+            cat_name = (
+                await db.execute(select(Category.name).where(Category.id == brand.category_id))
+            ).scalar_one_or_none()
         resp = BrandResponse.model_validate(brand)
         resp.product_count = p_count
+        resp.category_name = cat_name
         return resp
 
     @staticmethod
