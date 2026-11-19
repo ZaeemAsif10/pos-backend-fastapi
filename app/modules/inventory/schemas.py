@@ -12,7 +12,10 @@ class PurchaseItemBase(BaseModel):
     unit_name: str = Field(default="Piece", max_length=50, description="e.g. Carton, Box, Piece")
     quantity: float = Field(..., gt=0, description="Quantity in selected unit")
     conversion_factor: float = Field(default=1.0, gt=0, description="Multiplier to base unit")
-    unit_cost: float = Field(..., ge=0, description="Price per selected unit")
+    unit_cost: float = Field(..., ge=0, description="Purchase price per selected unit")
+    retail_price: float = Field(default=0.0, ge=0, description="Sale / Retail price per selected unit")
+    tax_rate: float = Field(default=0.0, ge=0, le=100, description="Tax percentage on this item")
+    tax_amount: float = Field(default=0.0, ge=0, description="Calculated tax amount for this row")
     batch_number: Optional[str] = Field(None, max_length=50)
     expiry_date: Optional[date] = None
 

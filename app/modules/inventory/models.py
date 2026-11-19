@@ -95,6 +95,9 @@ class PurchaseItem(Base):
     conversion_factor: Mapped[float] = mapped_column(Numeric(10, 2), default=1.00, nullable=False)
     total_base_quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     unit_cost: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    retail_price: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
+    tax_rate: Mapped[float] = mapped_column(Numeric(5, 2), default=0.00, nullable=False)
+    tax_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
     total_cost: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
 
     batch_number: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)

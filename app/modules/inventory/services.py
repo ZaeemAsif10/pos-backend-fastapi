@@ -175,6 +175,7 @@ class PurchaseService:
 
         # 2. Calculate Subtotal and Item Totals
         subtotal = 0.0
+        items_tax_total = 0.0
         calculated_items = []
         for item_in in payload.items:
             # Check product
@@ -202,19 +203,31 @@ class PurchaseService:
                     factor = float(uom.conversion_factor)
 
             base_qty = float(item_in.quantity) * factor
-            row_total = float(item_in.quantity) * float(item_in.unit_cost)
-            subtotal += row_total
+            row_base_total = float(item_in.quantity) * float(item_in.unit_cost)
+            row_tax_rate = float(getattr(item_in, "tax_rate", 0.0) or 0.0)
+            row_tax_amount = (
+                round(row_base_total * (row_tax_rate / 100.0), 2)
+                if row_tax_rate > 0
+                else float(getattr(item_in, "tax_amount", 0.0) or 0.0)
+            )
+            row_total = round(row_base_total + row_tax_amount, 2)
+            subtotal += row_base_total
+            items_tax_total += row_tax_amount
 
             calculated_items.append({
                 "product": product,
                 "input": item_in,
                 "factor": factor,
                 "base_qty": base_qty,
+                "row_base_total": row_base_total,
+                "row_tax_rate": row_tax_rate,
+                "row_tax_amount": row_tax_amount,
                 "row_total": row_total,
             })
 
         # 3. Calculate Bill Totals
-        total_amount = subtotal - payload.discount_amount + payload.tax_amount + payload.shipping_cost
+        effective_tax_amount = round(items_tax_total, 2) if items_tax_total > 0 else float(payload.tax_amount or 0.0)
+        total_amount = subtotal - payload.discount_amount + effective_tax_amount + payload.shipping_cost
         paid_amount = min(payload.paid_amount, total_amount)
         balance_due = max(0.0, total_amount - paid_amount)
 
@@ -244,7 +257,7 @@ class PurchaseService:
             payment_status=payment_status,
             subtotal=subtotal,
             discount_amount=payload.discount_amount,
-            tax_amount=payload.tax_amount,
+            tax_amount=effective_tax_amount,
             shipping_cost=payload.shipping_cost,
             total_amount=total_amount,
             paid_amount=paid_amount,
@@ -257,6 +270,7 @@ class PurchaseService:
 
         # 6. Insert Line Items, Update Branch Stock, and Add Stock Movements
         for ci in calculated_items:
+            item_retail_price = float(getattr(ci["input"], "retail_price", 0.0) or 0.0)
             p_item = PurchaseItem(
                 tenant_id=tenant_id,
                 purchase_id=purchase.id,
@@ -267,6 +281,9 @@ class PurchaseService:
                 conversion_factor=ci["factor"],
                 total_base_quantity=ci["base_qty"],
                 unit_cost=ci["input"].unit_cost,
+                retail_price=item_retail_price,
+                tax_rate=ci["row_tax_rate"],
+                tax_amount=ci["row_tax_amount"],
                 total_cost=ci["row_total"],
                 batch_number=ci["input"].batch_number.strip() if ci["input"].batch_number else None,
                 expiry_date=ci["input"].expiry_date,
@@ -292,6 +309,13 @@ class PurchaseService:
                     ci["product"].cost_price = round(wac, 2)
                 else:
                     ci["product"].cost_price = base_unit_cost
+
+            # Sync Sale Price (retail_price) and Tax Rate on Product master record
+            if item_retail_price > 0:
+                base_retail_price = round(item_retail_price / max(1.0, float(ci["factor"])), 2)
+                ci["product"].retail_price = base_retail_price
+            if ci["row_tax_rate"] >= 0:
+                ci["product"].tax_rate = ci["row_tax_rate"]
 
             if not bs:
                 bs = BranchStock(
