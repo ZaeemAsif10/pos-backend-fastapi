@@ -109,7 +109,9 @@ class LiveInventoryItem(BaseModel):
     product_name: str
     sku: str
     barcode: Optional[str] = None
+    category_id: Optional[int] = None
     category_name: Optional[str] = None
+    brand_id: Optional[int] = None
     brand_name: Optional[str] = None
     base_unit: str
     branch_id: int
@@ -118,6 +120,10 @@ class LiveInventoryItem(BaseModel):
     reorder_point: float
     cost_price: float
     retail_price: float
+    wholesale_price: float = 0.0
+    tax_rate: float = 0.0
+    is_fbr_third_schedule: bool = False
+    image_url: Optional[str] = None
     stock_status: str  # "In Stock", "Low Stock", "Out of Stock"
 
 

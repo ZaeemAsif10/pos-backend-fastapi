@@ -684,28 +684,20 @@ class ProductService:
                 )
                 db.add(c_obj)
 
-        # 6. Auto-initialize BranchStock across all tenant branches
-        branches_res = await db.execute(
-            select(Branch).where(Branch.tenant_id == tenant_id)
-        )
-        branches = branches_res.scalars().all()
-
-        initial_stock_map = {item.branch_id: item.quantity for item in payload.initial_stocks}
-        reorder_point_map = {item.branch_id: item.reorder_point for item in payload.initial_stocks}
-
-        for br in branches:
-            init_qty = initial_stock_map.get(br.id, 0.0)
-            rp = reorder_point_map.get(br.id, payload.reorder_level)
-            b_stock = BranchStock(
-                tenant_id=tenant_id,
-                product_id=prod.id,
-                branch_id=br.id,
-                quantity=init_qty,
-                reserved_quantity=0.0,
-                reorder_point=rp,
-                updated_at=now,
-            )
-            db.add(b_stock)
+        # 6. Only create BranchStock rows if initial stock > 0 is explicitly specified
+        if payload.initial_stocks:
+            for item in payload.initial_stocks:
+                if float(item.quantity or 0.0) > 0:
+                    b_stock = BranchStock(
+                        tenant_id=tenant_id,
+                        product_id=prod.id,
+                        branch_id=item.branch_id,
+                        quantity=float(item.quantity),
+                        reserved_quantity=0.0,
+                        reorder_point=item.reorder_point if item.reorder_point is not None else payload.reorder_level,
+                        updated_at=now,
+                    )
+                    db.add(b_stock)
 
         await db.commit()
         return await ProductService.get_product_detail(db, tenant_id, prod.id)

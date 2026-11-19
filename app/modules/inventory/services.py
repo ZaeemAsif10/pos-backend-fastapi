@@ -622,13 +622,16 @@ class InventoryService:
                 if stock_status.lower() != status_label.lower():
                     continue
 
+            eff_retail = float(prod.retail_price) if float(prod.retail_price) > 0 else float(prod.cost_price)
             results.append(
                 LiveInventoryItem(
                     product_id=prod.id,
                     product_name=prod.name,
                     sku=prod.sku,
                     barcode=prod.barcode,
+                    category_id=prod.category_id,
                     category_name=prod.category.name if prod.category else None,
+                    brand_id=prod.brand_id,
                     brand_name=prod.brand.name if prod.brand else None,
                     base_unit=prod.base_unit,
                     branch_id=br.id,
@@ -636,7 +639,11 @@ class InventoryService:
                     current_stock=cur_stock,
                     reorder_point=reorder,
                     cost_price=float(prod.cost_price),
-                    retail_price=float(prod.retail_price),
+                    retail_price=eff_retail,
+                    wholesale_price=float(prod.wholesale_price or eff_retail),
+                    tax_rate=float(prod.tax_rate or 0.0),
+                    is_fbr_third_schedule=bool(prod.is_fbr_third_schedule),
+                    image_url=prod.image_url,
                     stock_status=status_label,
                 )
             )
