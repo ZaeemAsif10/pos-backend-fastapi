@@ -13,7 +13,7 @@ DAYBOOK_PERMISSIONS = [
     {
         "module": "daybook",
         "code": "daybook:view",
-        "name": "View Day Book (Roznamcha)",
+        "name": "View Daily Cash Register",
         "description": "View daily cash & bank ledger, drawer balance, and transactions",
     },
     {

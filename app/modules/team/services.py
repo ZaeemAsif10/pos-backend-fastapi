@@ -1401,6 +1401,7 @@ class TeamService:
             "products": "Products & Catalogue",
             "pos": "POS Counter Billing",
             "sales": "Sales & Delivery Challans",
+            "daybook": "Daily Cash Register",
             "purchase": "Purchasing & Vendor Bills",
             "purchases": "Purchases & GRN",
             "purchase_returns": "Purchase Returns & Debit Notes",
