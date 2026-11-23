@@ -529,13 +529,30 @@ class AccountingPostingEngine:
             ))
             tot_credit += balance_due
 
-        # 4. Credit Cash / Bank for instant paid amount
+        # 4. Credit Cash / Bank (or explicitly chosen Paid From Account) for instant paid amount
         if paid_amt > 0:
             actual_paid = min(paid_amt, final_bill)
-            method_map = settings.payment_method_mappings or {}
-            # Check if purchase has payment method or default to cash
-            pm_key = getattr(purchase, "payment_method", "cash") or "cash"
-            target_tender_acc_id = method_map.get(pm_key.lower()) or (cash_acc_id if pm_key.lower() == "cash" else bank_acc_id)
+            explicit_acc_id = getattr(purchase, "paid_from_account_id", None)
+            target_tender_acc_id = None
+            tender_label = "CASH/BANK"
+
+            if explicit_acc_id:
+                acc_row = (
+                    await db.execute(
+                        select(Account).where(Account.tenant_id == tenant_id, Account.id == explicit_acc_id)
+                    )
+                ).scalar_one_or_none()
+                if acc_row:
+                    target_tender_acc_id = acc_row.id
+                    tender_label = f"{acc_row.code} - {acc_row.name}"
+
+            if not target_tender_acc_id:
+                method_map = settings.payment_method_mappings or {}
+                pm_key = getattr(purchase, "payment_method", "cash") or "cash"
+                target_tender_acc_id = method_map.get(pm_key.lower()) or (
+                    cash_acc_id if pm_key.lower() == "cash" else bank_acc_id
+                )
+                tender_label = pm_key.upper()
 
             if target_tender_acc_id and actual_paid > 0:
                 lines.append(JournalEntryLine(
@@ -543,7 +560,7 @@ class AccountingPostingEngine:
                     branch_id=purchase.branch_id,
                     debit=0.0,
                     credit=round(actual_paid, 2),
-                    narration=f"Instant purchase payment via {pm_key.upper()} (Bill: {purchase.invoice_number})",
+                    narration=f"Purchase payment via {tender_label} (Bill: {purchase.invoice_number})",
                     supplier_id=purchase.supplier_id,
                 ))
                 tot_credit += actual_paid
@@ -1052,36 +1069,24 @@ class AccountingPostingEngine:
     async def post_purchase_return(
         db: AsyncSession,
         tenant_id: int,
-        purchase,  # Purchase model instance
+        purchase,  # Purchase or PurchaseReturn model instance
         user_id: Optional[int] = None,
         reason: Optional[str] = None,
         refund_payment_method: Optional[str] = None,
+        return_amount_override: Optional[float] = None,
+        refund_account_id_override: Optional[int] = None,
+        return_voucher_no: Optional[str] = None,
     ) -> Optional[JournalEntry]:
         """
         Auto-post balanced Debit Note / Purchase Return Journal Voucher (IFRS / IAS-2 Perpetual Inventory).
-        Reverses the original purchase invoice:
-        - Dr. Accounts Payable (2010) (for unpaid balance due relieved)
-        - Dr. Cash Drawer / Bank (1010/1020) (if cash/bank refund received for paid amount)
-          OR Dr. Accounts Payable (2010) (if paid amount is kept as credit balance on supplier khata)
-        - Cr. Merchandise Inventory Asset (1040) (net merchandise cost returned)
-        - Cr. Input Tax / Sales Tax (2020) (if tax was paid on purchase and reversed)
+        Supports both full/partial invoice returns and standalone product returns:
+        - Dr. Accounts Payable (2010) (when return reduces supplier khata balance / credit)
+        - Dr. Cash Drawer / Bank (1010/1020 or selected refund_account_id) (when refund received in cash/bank)
+        - Cr. Merchandise Inventory Asset (1040) (net merchandise cost returned from warehouse)
         """
         settings = await AccountingService.get_tenant_settings(db, tenant_id)
         if not settings.auto_posting_enabled:
             return None
-
-        # Check existing posted purchase_return JV to avoid duplication
-        existing_res = await db.execute(
-            select(JournalEntry).where(
-                JournalEntry.tenant_id == tenant_id,
-                JournalEntry.source_type == "purchase_return",
-                JournalEntry.source_id == purchase.id,
-                JournalEntry.status == "posted",
-            )
-        )
-        existing_jv = existing_res.scalars().first()
-        if existing_jv:
-            return existing_jv
 
         inventory_acc_id = await AccountingPostingEngine._resolve_inventory_asset_account_id(db, tenant_id, settings)
         ap_acc_id = settings.default_ap_account_id
@@ -1102,93 +1107,54 @@ class AccountingPostingEngine:
         if not inventory_acc_id or not ap_acc_id:
             return None
 
-        subtotal = float(purchase.subtotal or 0.0)
-        discount = float(purchase.discount_amount or 0.0)
-        shipping = float(purchase.shipping_cost or 0.0)
-        tax_amt = float(purchase.tax_amount or 0.0)
-        paid_amt = float(purchase.paid_amount or 0.0)
-        balance_due = float(purchase.balance_due or 0.0)
-        final_bill = float(purchase.total_amount or 0.0)
-
-        net_stock_value = max(0.0, round(subtotal - discount + shipping, 2))
+        branch_id = getattr(purchase, "branch_id", None)
+        supplier_id = getattr(purchase, "supplier_id", None)
+        doc_no = return_voucher_no or getattr(purchase, "return_number", None) or f"DN-{getattr(purchase, 'invoice_number', purchase.id)}"
 
         lines: List[JournalEntryLine] = []
         tot_debit = 0.0
         tot_credit = 0.0
 
-        # 1. Debit Accounts Payable (Supplier Khata) for balance due being cancelled
-        if balance_due > 0 and ap_acc_id:
-            lines.append(JournalEntryLine(
-                account_id=ap_acc_id,
-                branch_id=purchase.branch_id,
-                debit=round(balance_due, 2),
-                credit=0.0,
-                narration=f"Supplier payable debited on return (DN: {purchase.invoice_number})",
-                supplier_id=purchase.supplier_id,
-            ))
-            tot_debit += balance_due
+        # If return_amount_override is provided (or PurchaseReturn instance), post exact returned amount
+        ret_amt = round(float(return_amount_override if return_amount_override is not None else getattr(purchase, "total_amount", 0.0) or 0.0), 2)
+        if ret_amt <= 0:
+            return None
 
-        # 2. Paid amount handling
-        if paid_amt > 0:
-            actual_paid = min(paid_amt, final_bill)
+        pm_key = (refund_payment_method or getattr(purchase, "refund_method", None) or "credit").lower()
+        explicit_acc_id = refund_account_id_override or getattr(purchase, "refund_account_id", None)
+
+        if explicit_acc_id:
+            target_debit_acc_id = explicit_acc_id
+            debit_narr = f"Refund received into account for purchase return ({doc_no})"
+        elif pm_key in ("cash", "bank", "bank_transfer", "card", "raast"):
             method_map = settings.payment_method_mappings or {}
-            pm_key = (refund_payment_method or getattr(purchase, "payment_method", "cash") or "cash").lower()
+            target_debit_acc_id = method_map.get(pm_key) or (cash_acc_id if pm_key == "cash" else bank_acc_id) or ap_acc_id
+            debit_narr = f"Refund received from supplier via {pm_key.upper()} ({doc_no})"
+        else:
+            target_debit_acc_id = ap_acc_id
+            debit_narr = f"Supplier payable / khata debited on purchase return ({doc_no})"
 
-            if pm_key in ("cash", "bank", "bank_transfer", "card", "raast"):
-                target_tender_acc_id = method_map.get(pm_key) or (cash_acc_id if pm_key == "cash" else bank_acc_id)
-                lines.append(JournalEntryLine(
-                    account_id=target_tender_acc_id,
-                    branch_id=purchase.branch_id,
-                    debit=round(actual_paid, 2),
-                    credit=0.0,
-                    narration=f"Refund received from supplier via {pm_key.upper()} (DN: {purchase.invoice_number})",
-                    supplier_id=purchase.supplier_id,
-                ))
-                tot_debit += actual_paid
-            else:
-                # Credit on supplier khata (reduces AP / creates advance debit balance)
-                lines.append(JournalEntryLine(
-                    account_id=ap_acc_id,
-                    branch_id=purchase.branch_id,
-                    debit=round(actual_paid, 2),
-                    credit=0.0,
-                    narration=f"Supplier khata credited for return (DN: {purchase.invoice_number})",
-                    supplier_id=purchase.supplier_id,
-                ))
-                tot_debit += actual_paid
+        # 1. Debit Accounts Payable or Cash/Bank Refund Account
+        lines.append(JournalEntryLine(
+            account_id=target_debit_acc_id,
+            branch_id=branch_id,
+            debit=ret_amt,
+            credit=0.0,
+            narration=debit_narr,
+            supplier_id=supplier_id,
+        ))
+        tot_debit += ret_amt
 
-        # 3. Credit Merchandise Inventory Asset (relieving stock value)
-        if net_stock_value > 0:
-            lines.append(JournalEntryLine(
-                account_id=inventory_acc_id,
-                branch_id=purchase.branch_id,
-                debit=0.0,
-                credit=round(net_stock_value, 2),
-                narration=f"Inventory relieved on purchase return (DN: {purchase.invoice_number})",
-                supplier_id=purchase.supplier_id,
-            ))
-            tot_credit += net_stock_value
-
-        # 4. Credit Input Tax (if tax was reversed)
-        if tax_amt > 0 and tax_acc_id:
-            lines.append(JournalEntryLine(
-                account_id=tax_acc_id,
-                branch_id=purchase.branch_id,
-                debit=0.0,
-                credit=round(tax_amt, 2),
-                narration=f"Input tax reversed on purchase return (DN: {purchase.invoice_number})",
-                supplier_id=purchase.supplier_id,
-            ))
-            tot_credit += tax_amt
-
-        # Invariant check penny rounding
-        diff = round(tot_debit - tot_credit, 2)
-        if abs(diff) > 0.00 and abs(diff) <= 0.05:
-            for l in lines:
-                if l.account_id == inventory_acc_id:
-                    l.credit = round(l.credit + diff, 2)
-                    tot_credit += diff
-                    break
+        # 2. Credit Merchandise Inventory Asset (relieving stock value from warehouse)
+        lines.append(JournalEntryLine(
+            account_id=inventory_acc_id,
+            branch_id=branch_id,
+            debit=0.0,
+            credit=ret_amt,
+            narration=f"Warehouse inventory relieved on purchase return ({doc_no})",
+            supplier_id=supplier_id,
+        ))
+        tot_credit += ret_amt
 
         tot_debit = round(tot_debit, 2)
         tot_credit = round(tot_credit, 2)
@@ -1197,28 +1163,25 @@ class AccountingPostingEngine:
             return None
 
         entry_no = await AccountingService.generate_jv_number(db, tenant_id)
-        ref_no = f"DN-{purchase.invoice_number}"
-        narr = f"Purchase Return / Debit Note: {purchase.invoice_number}"
-        if purchase.supplier_bill_no:
-            narr += f" (Ref: {purchase.supplier_bill_no})"
+        narr = f"Purchase Return / Debit Note: {doc_no}"
         if reason:
             narr += f" - Reason: {reason}"
 
         jv = JournalEntry(
             tenant_id=tenant_id,
-            branch_id=purchase.branch_id,
+            branch_id=branch_id,
             entry_number=entry_no,
             entry_date=datetime.now(timezone.utc),
             source_type="purchase_return",
             source_id=purchase.id,
-            reference_no=ref_no,
+            reference_no=doc_no,
             narration=narr,
             currency="PKR",
             exchange_rate=1.0,
             status="posted",
             total_debit=tot_debit,
             total_credit=tot_credit,
-            created_by_id=user_id or purchase.created_by_id,
+            created_by_id=user_id or getattr(purchase, "created_by_id", None),
             lines=lines,
         )
         db.add(jv)

@@ -44,6 +44,9 @@ class Purchase(Base):
     total_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
     paid_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
     balance_due: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
+    paid_from_account_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
 
     notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_by_id: Mapped[Optional[int]] = mapped_column(
@@ -64,6 +67,7 @@ class Purchase(Base):
     tenant = relationship("Tenant", backref="purchases")
     branch = relationship("Branch", foreign_keys=[branch_id])
     supplier = relationship("Supplier", foreign_keys=[supplier_id])
+    paid_from_account = relationship("Account", foreign_keys=[paid_from_account_id])
     created_by = relationship("User", foreign_keys=[created_by_id])
     items = relationship("PurchaseItem", back_populates="purchase", cascade="all, delete-orphan")
 
@@ -92,6 +96,7 @@ class PurchaseItem(Base):
 
     unit_name: Mapped[str] = mapped_column(String(50), nullable=False)  # Piece, Carton, Box
     quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    returned_quantity: Mapped[float] = mapped_column(Numeric(12, 2), default=0.00, nullable=False)
     conversion_factor: Mapped[float] = mapped_column(Numeric(10, 2), default=1.00, nullable=False)
     total_base_quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
     unit_cost: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
@@ -299,4 +304,91 @@ class PaymentStatusOption(Base):
     __table_args__ = (
         UniqueConstraint("tenant_id", "code", name="uq_tenant_payment_status_code"),
     )
+
+
+class PurchaseReturn(Base):
+    """Purchase Returns & Debit Notes (linked to an invoice or standalone direct product returns from a warehouse)."""
+    __tablename__ = "purchase_returns"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    purchase_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("purchases.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    branch_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("branches.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    supplier_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("suppliers.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+
+    return_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    return_date: Mapped[date] = mapped_column(Date, default=lambda: datetime.now(timezone.utc).date(), nullable=False)
+    total_qty: Mapped[float] = mapped_column(Numeric(12, 2), default=0.00, nullable=False)
+    total_amount: Mapped[float] = mapped_column(Numeric(14, 2), default=0.00, nullable=False)
+
+    refund_method: Mapped[str] = mapped_column(String(30), default="credit", nullable=False)  # credit (Supplier Khata), cash, bank
+    refund_account_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True, index=True
+    )
+    reason: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_by_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+        nullable=False,
+    )
+
+    # Relationships
+    purchase = relationship("Purchase", foreign_keys=[purchase_id])
+    branch = relationship("Branch", foreign_keys=[branch_id])
+    supplier = relationship("Supplier", foreign_keys=[supplier_id])
+    refund_account = relationship("Account", foreign_keys=[refund_account_id])
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    items = relationship("PurchaseReturnItem", back_populates="purchase_return", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "return_number", name="uq_tenant_purchase_return_no"),
+    )
+
+
+class PurchaseReturnItem(Base):
+    """Line items for a Purchase Return / Debit Note."""
+    __tablename__ = "purchase_return_items"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    purchase_return_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("purchase_returns.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    purchase_item_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("purchase_items.id", ondelete="SET NULL"), nullable=True
+    )
+    product_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    unit_name: Mapped[str] = mapped_column(String(50), default="Piece", nullable=False)
+    quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    conversion_factor: Mapped[float] = mapped_column(Numeric(10, 2), default=1.00, nullable=False)
+    total_base_quantity: Mapped[float] = mapped_column(Numeric(12, 2), nullable=False)
+    unit_cost: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+    total_cost: Mapped[float] = mapped_column(Numeric(14, 2), nullable=False)
+
+    # Relationships
+    purchase_return = relationship("PurchaseReturn", back_populates="items")
+    purchase_item = relationship("PurchaseItem", foreign_keys=[purchase_item_id])
+    product = relationship("Product")
+
 

@@ -29,6 +29,7 @@ class PurchaseItemResponse(PurchaseItemBase):
     purchase_id: int
     product_name: Optional[str] = None
     product_sku: Optional[str] = None
+    returned_quantity: float = 0.0
     total_base_quantity: float
     total_cost: float
 
@@ -49,6 +50,7 @@ class PurchaseCreate(BaseModel):
     tax_amount: float = Field(default=0.00, ge=0)
     shipping_cost: float = Field(default=0.00, ge=0)
     paid_amount: float = Field(default=0.00, ge=0, description="Cash/bank paid immediately")
+    paid_from_account_id: Optional[int] = Field(None, description="Chart of Accounts ID from which payment was made")
     notes: Optional[str] = None
     items: List[PurchaseItemCreate] = Field(..., min_length=1, description="Purchase line items")
 
@@ -56,14 +58,84 @@ class PurchaseCreate(BaseModel):
 class PurchaseUpdate(BaseModel):
     payment_status: Optional[str] = Field(None, max_length=50, description="Updated payment status code (e.g. paid, unpaid)")
     paid_amount: Optional[float] = Field(None, ge=0)
+    paid_from_account_id: Optional[int] = Field(None, description="Chart of Accounts ID from which payment was made")
     supplier_bill_no: Optional[str] = Field(None, max_length=50)
     notes: Optional[str] = None
     status: Optional[str] = None  # draft, received, cancelled, returned
 
 
+class PurchaseReturnItemInput(BaseModel):
+    purchase_item_id: Optional[int] = Field(None, description="Original purchase_items.id if returning from an invoice")
+    product_id: int = Field(..., description="Product ID being returned")
+    unit_name: str = Field(default="Piece", max_length=50)
+    quantity: float = Field(..., gt=0, description="Quantity being returned")
+    conversion_factor: float = Field(default=1.0, gt=0)
+    unit_cost: float = Field(..., ge=0, description="Return rate per unit")
+
+
 class PurchaseReturnRequest(BaseModel):
     reason: Optional[str] = "Goods Returned to Supplier / Debit Note"
-    refund_payment_method: Optional[str] = "cash"  # cash, bank, credit
+    refund_payment_method: Optional[str] = "credit"  # credit, cash, bank
+    refund_account_id: Optional[int] = Field(None, description="Cash / Bank account ID if refund received in cash/bank")
+    notes: Optional[str] = None
+    items: Optional[List[PurchaseReturnItemInput]] = Field(None, description="Partial or full item quantities to return")
+
+
+class StandalonePurchaseReturnCreate(BaseModel):
+    branch_id: int = Field(..., description="Warehouse / Branch from which stock is being returned")
+    supplier_id: int = Field(..., description="Supplier / Vendor to whom stock is returned")
+    purchase_id: Optional[int] = Field(None, description="Optional linked purchase invoice ID")
+    return_date: Optional[date] = None
+    refund_method: str = Field(default="credit", description="credit (reduce Supplier Khata payable), cash, or bank")
+    refund_account_id: Optional[int] = Field(None, description="Cash / Bank account ID if cash/bank refund received")
+    reason: Optional[str] = "Damaged / Excess Goods Returned to Supplier"
+    notes: Optional[str] = None
+    items: List[PurchaseReturnItemInput] = Field(..., min_length=1)
+
+
+class PurchaseReturnItemResponse(BaseModel):
+    id: int
+    purchase_return_id: int
+    purchase_item_id: Optional[int] = None
+    product_id: int
+    product_name: Optional[str] = None
+    product_sku: Optional[str] = None
+    unit_name: str
+    quantity: float
+    conversion_factor: float
+    total_base_quantity: float
+    unit_cost: float
+    total_cost: float
+
+    class Config:
+        from_attributes = True
+
+
+class PurchaseReturnResponse(BaseModel):
+    id: int
+    tenant_id: int
+    purchase_id: Optional[int] = None
+    purchase_invoice_number: Optional[str] = None
+    branch_id: int
+    branch_name: Optional[str] = None
+    supplier_id: int
+    supplier_name: Optional[str] = None
+    return_number: str
+    return_date: date
+    total_qty: float
+    total_amount: float
+    refund_method: str
+    refund_account_id: Optional[int] = None
+    refund_account_name: Optional[str] = None
+    refund_account_code: Optional[str] = None
+    journal_entry_number: Optional[str] = None
+    reason: Optional[str] = None
+    notes: Optional[str] = None
+    created_at: datetime
+    items: List[PurchaseReturnItemResponse] = []
+
+    class Config:
+        from_attributes = True
 
 
 class PurchaseResponse(BaseModel):
@@ -79,6 +151,9 @@ class PurchaseResponse(BaseModel):
     supplier_id: int
     supplier_name: Optional[str] = None
     items_count: int = 0
+    total_qty: float = 0.0
+    returned_qty: float = 0.0
+    returned_amount: float = 0.0
     subtotal: float
     discount_amount: float
     tax_amount: float
@@ -86,6 +161,10 @@ class PurchaseResponse(BaseModel):
     total_amount: float
     paid_amount: float
     balance_due: float
+    paid_from_account_id: Optional[int] = None
+    paid_from_account_name: Optional[str] = None
+    paid_from_account_code: Optional[str] = None
+    journal_entry_number: Optional[str] = None
     notes: Optional[str] = None
     created_at: datetime
     updated_at: datetime

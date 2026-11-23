@@ -1135,6 +1135,7 @@ class SupplierService:
         # 1. Fetch purchases
         purch_stmt = (
             select(Purchase)
+            .options(joinedload(Purchase.paid_from_account))
             .where(
                 Purchase.tenant_id == tenant_id,
                 Purchase.supplier_id == supplier_id,
@@ -1160,12 +1161,13 @@ class SupplierService:
         # 3. Interleave events
         raw_events = []
         for p in purchases:
+            acc_info = f" via {p.paid_from_account.code} - {p.paid_from_account.name}" if getattr(p, "paid_from_account", None) else ""
             raw_events.append({
                 "id": p.id,
                 "type": "purchase",
                 "date": p.created_at,
                 "ref": p.invoice_number + (f" ({p.supplier_bill_no})" if p.supplier_bill_no else ""),
-                "desc": f"Goods Received Purchase ({p.payment_status.title()})" + (" [Returned]" if p.status == "returned" else ""),
+                "desc": f"Goods Received Purchase ({p.payment_status.title()}{acc_info})" + (" [Returned]" if p.status == "returned" else ""),
                 "debit": float(p.paid_amount),     # Paid at purchase time (reduces payable)
                 "credit": float(p.total_amount),   # Total bill (increases payable)
                 "method": "purchase_bill",

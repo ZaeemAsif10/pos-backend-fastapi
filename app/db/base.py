@@ -41,6 +41,8 @@ from app.modules.parties.models import (
 from app.modules.inventory.models import (
     Purchase,
     PurchaseItem,
+    PurchaseReturn,
+    PurchaseReturnItem,
     StockMovement,
     StockTransfer,
     StockTransferItem,

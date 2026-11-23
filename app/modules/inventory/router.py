@@ -10,6 +10,8 @@ from app.modules.inventory.schemas import (
     PurchaseCreate,
     PurchaseUpdate,
     PurchaseReturnRequest,
+    StandalonePurchaseReturnCreate,
+    PurchaseReturnResponse,
     PurchaseResponse,
     PurchaseDetailResponse,
     PurchaseStatsResponse,
@@ -145,7 +147,7 @@ async def delete_purchase(
 @router.post(
     "/purchases/{purchase_id}/return",
     response_model=PurchaseDetailResponse,
-    summary="Process Purchase Return / Debit Note",
+    summary="Process Partial or Full Purchase Return / Debit Note",
 )
 async def return_purchase(
     purchase_id: int,
@@ -155,13 +157,16 @@ async def return_purchase(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Process full return to supplier (Debit Note):
-    Deducts stock, reverses supplier payable, and auto-posts balanced Debit Note JV.
+    Process partial or full item-level return to supplier (Debit Note):
+    Deducts returned qty from warehouse stock, adjusts supplier payable / refund account, and auto-posts balanced Debit Note JV.
     """
     tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
     await TeamService.verify_purchase_create_permission(current_user, tenant, db)
     reason = payload.reason if payload and payload.reason else "Goods Returned to Supplier / Debit Note"
-    refund_method = payload.refund_payment_method if payload and payload.refund_payment_method else "cash"
+    refund_method = payload.refund_payment_method if payload and payload.refund_payment_method else "credit"
+    refund_account_id = payload.refund_account_id if payload else None
+    notes = payload.notes if payload else None
+    items = payload.items if payload else None
     p = await PurchaseService.return_purchase(
         db,
         tenant.id,
@@ -169,8 +174,48 @@ async def return_purchase(
         user_id=current_user.id,
         reason=reason,
         refund_payment_method=refund_method,
+        refund_account_id=refund_account_id,
+        notes=notes,
+        return_items=items,
     )
     return await PurchaseService.get_purchase_detail(db, tenant.id, p.id)
+
+
+@router.get(
+    "/purchase-returns",
+    response_model=List[PurchaseReturnResponse],
+    summary="List Purchase Returns & Debit Notes",
+)
+async def list_purchase_returns(
+    branch_id: Optional[int] = Query(None, description="Filter by Warehouse / Branch"),
+    supplier_id: Optional[int] = Query(None, description="Filter by Supplier"),
+    search: Optional[str] = Query(None, description="Search by PRN # or reason"),
+    tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
+    await TeamService.verify_purchase_view_permission(current_user, tenant, db)
+    return await PurchaseService.list_purchase_returns(
+        db, tenant.id, branch_id=branch_id, supplier_id=supplier_id, search=search
+    )
+
+
+@router.post(
+    "/purchase-returns",
+    response_model=PurchaseReturnResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create Standalone or Invoice-Linked Purchase Return",
+)
+async def create_purchase_return(
+    payload: StandalonePurchaseReturnCreate,
+    tenant_id: Optional[int] = Query(None, description="Optional tenant ID (for Super Admin)"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
+    await TeamService.verify_purchase_create_permission(current_user, tenant, db)
+    return await PurchaseService.create_standalone_purchase_return(db, tenant.id, current_user.id, payload)
 
 
 

@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.modules.inventory.models import (
     Purchase,
     PurchaseItem,
+    PurchaseReturn,
+    PurchaseReturnItem,
     StockMovement,
     StockTransfer,
     StockTransferItem,
@@ -26,6 +28,11 @@ from app.modules.inventory.schemas import (
     PurchaseDetailResponse,
     PurchaseItemResponse,
     PurchaseStatsResponse,
+    PurchaseReturnItemInput,
+    PurchaseReturnRequest,
+    StandalonePurchaseReturnCreate,
+    PurchaseReturnResponse,
+    PurchaseReturnItemResponse,
     LiveInventoryItem,
     StockMovementResponse,
     StockTransferCreate,
@@ -260,11 +267,15 @@ class PurchaseService:
             select(
                 Purchase,
                 func.count(PurchaseItem.id).label("items_count"),
+                func.coalesce(func.sum(PurchaseItem.quantity), 0).label("total_qty"),
+                func.coalesce(func.sum(PurchaseItem.returned_quantity), 0).label("returned_qty"),
+                func.coalesce(func.sum(PurchaseItem.returned_quantity * PurchaseItem.unit_cost), 0).label("returned_amount"),
             )
             .outerjoin(PurchaseItem, PurchaseItem.purchase_id == Purchase.id)
             .options(
                 joinedload(Purchase.branch),
                 joinedload(Purchase.supplier),
+                joinedload(Purchase.paid_from_account),
             )
             .where(Purchase.tenant_id == tenant_id)
             .group_by(Purchase.id)
@@ -287,12 +298,36 @@ class PurchaseService:
             )
 
         res = await db.execute(stmt)
+        rows = res.unique().all()
+
+        # Fetch linked Journal Vouchers for these purchases
+        from app.modules.accounting.models import JournalEntry
+        purchase_ids = [p.id for p, _, _, _, _ in rows]
+        jv_map = {}
+        if purchase_ids:
+            jv_res = await db.execute(
+                select(JournalEntry.source_id, JournalEntry.entry_number).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.source_type == "purchase_invoice",
+                    JournalEntry.source_id.in_(purchase_ids),
+                    JournalEntry.status == "posted",
+                )
+            )
+            for s_id, e_num in jv_res.all():
+                jv_map[s_id] = e_num
+
         results = []
-        for p, count in res.unique().all():
+        for p, count, tot_qty, ret_qty, ret_amt in rows:
             resp = PurchaseResponse.model_validate(p)
             resp.branch_name = p.branch.name if p.branch else None
             resp.supplier_name = p.supplier.company_name if p.supplier else None
+            resp.paid_from_account_name = p.paid_from_account.name if p.paid_from_account else None
+            resp.paid_from_account_code = p.paid_from_account.code if p.paid_from_account else None
+            resp.journal_entry_number = jv_map.get(p.id)
             resp.items_count = count
+            resp.total_qty = float(tot_qty or 0.0)
+            resp.returned_qty = float(ret_qty or 0.0)
+            resp.returned_amount = round(float(ret_amt or 0.0), 2)
             results.append(resp)
         return results
 
@@ -306,6 +341,7 @@ class PurchaseService:
             .options(
                 joinedload(Purchase.branch),
                 joinedload(Purchase.supplier),
+                joinedload(Purchase.paid_from_account),
                 selectinload(Purchase.items).joinedload(PurchaseItem.product),
             )
             .where(Purchase.tenant_id == tenant_id, Purchase.id == purchase_id)
@@ -318,10 +354,31 @@ class PurchaseService:
                 detail=f"Purchase with ID {purchase_id} was not found.",
             )
 
+        from app.modules.accounting.models import JournalEntry
+        jv_num = (
+            await db.execute(
+                select(JournalEntry.entry_number).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.source_type == "purchase_invoice",
+                    JournalEntry.source_id == p.id,
+                    JournalEntry.status == "posted",
+                ).order_by(JournalEntry.id.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+
         resp = PurchaseDetailResponse.model_validate(p)
         resp.branch_name = p.branch.name if p.branch else None
         resp.supplier_name = p.supplier.company_name if p.supplier else None
+        resp.paid_from_account_name = p.paid_from_account.name if p.paid_from_account else None
+        resp.paid_from_account_code = p.paid_from_account.code if p.paid_from_account else None
+        resp.journal_entry_number = jv_num
         resp.items_count = len(p.items)
+        resp.total_qty = sum(float(i.quantity or 0.0) for i in p.items)
+        resp.returned_qty = sum(float(getattr(i, "returned_quantity", 0.0) or 0.0) for i in p.items)
+        resp.returned_amount = round(
+            sum(float(getattr(i, "returned_quantity", 0.0) or 0.0) * float(i.unit_cost or 0.0) for i in p.items),
+            2,
+        )
 
         item_resps = []
         for item in p.items:
@@ -411,20 +468,32 @@ class PurchaseService:
         resolved_code, acc_behavior = await PaymentStatusService.resolve_behavior(
             db, tenant_id, payload.payment_status
         )
-        if acc_behavior == "paid":
-            paid_amount = total_amount
-            balance_due = 0.0
-            payment_status = resolved_code
-        elif acc_behavior == "unpaid":
+        paid_from_acc = None
+        if payload.paid_from_account_id:
+            from app.modules.accounting.models import Account
+            acc_res = await db.execute(
+                select(Account).where(Account.tenant_id == tenant_id, Account.id == payload.paid_from_account_id)
+            )
+            paid_from_acc = acc_res.scalar_one_or_none()
+
+        if acc_behavior == "unpaid" and (payload.paid_amount is None or float(payload.paid_amount) <= 0):
             paid_amount = 0.0
             balance_due = total_amount
+            paid_from_account_id = None
             payment_status = resolved_code
         else:
-            paid_amount = min(payload.paid_amount, total_amount)
-            balance_due = max(0.0, total_amount - paid_amount)
-            payment_status = resolved_code if resolved_code else (
-                "paid" if balance_due <= 0 else ("partial" if paid_amount > 0 else "unpaid")
-            )
+            if payload.paid_amount is not None and float(payload.paid_amount) > 0:
+                paid_amount = round(min(float(payload.paid_amount), total_amount), 2)
+            else:
+                paid_amount = total_amount if acc_behavior == "paid" else 0.0
+            balance_due = round(max(0.0, total_amount - paid_amount), 2)
+            paid_from_account_id = paid_from_acc.id if (paid_from_acc and paid_amount > 0) else None
+            if paid_amount <= 0:
+                payment_status = "unpaid"
+            elif balance_due > 0:
+                payment_status = "partial" if resolved_code in ("paid", "unpaid", "partial") else resolved_code
+            else:
+                payment_status = resolved_code
 
         # 4. Generate Unique Invoice Number (PUR-YYYYMM-XXXX)
         now = datetime.now(timezone.utc)
@@ -455,6 +524,7 @@ class PurchaseService:
             total_amount=total_amount,
             paid_amount=paid_amount,
             balance_due=balance_due,
+            paid_from_account_id=paid_from_account_id,
             notes=payload.notes.strip() if payload.notes else None,
             created_by_id=user_id,
         )
@@ -547,11 +617,12 @@ class PurchaseService:
             supplier.updated_at = now
 
         # 8. Enterprise Accounting: Auto-post Double-Entry Journal Voucher (GRN)
+        posted_jv = None
         try:
             from app.modules.accounting.services import AccountingService
             from app.modules.accounting.posting import AccountingPostingEngine
             await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id, backfill=False)
-            await AccountingPostingEngine.post_purchase_invoice(db, tenant_id, purchase, user_id)
+            posted_jv = await AccountingPostingEngine.post_purchase_invoice(db, tenant_id, purchase, user_id)
         except Exception as e:
             print(f"[ACCOUNTING AUTO-POST WARNING] Failed to post purchase voucher {purchase.invoice_number}: {e}")
 
@@ -561,7 +632,11 @@ class PurchaseService:
         resp = PurchaseResponse.model_validate(purchase)
         resp.branch_name = branch.name
         resp.supplier_name = supplier.company_name
+        resp.paid_from_account_name = paid_from_acc.name if (paid_from_acc and purchase.paid_from_account_id) else None
+        resp.paid_from_account_code = paid_from_acc.code if (paid_from_acc and purchase.paid_from_account_id) else None
+        resp.journal_entry_number = posted_jv.entry_number if posted_jv else None
         resp.items_count = len(payload.items)
+        resp.total_qty = sum(float(i.quantity or 0.0) for i in payload.items)
         return resp
 
     @staticmethod
@@ -581,6 +656,7 @@ class PurchaseService:
             .options(
                 joinedload(Purchase.branch),
                 joinedload(Purchase.supplier),
+                joinedload(Purchase.paid_from_account),
                 selectinload(Purchase.items),
             )
             .where(Purchase.tenant_id == tenant_id, Purchase.id == purchase_id)
@@ -604,23 +680,44 @@ class PurchaseService:
         if payload.status is not None:
             p.status = payload.status
 
-        if payload.payment_status is not None or payload.paid_amount is not None:
+        paid_from_acc = p.paid_from_account
+        if payload.paid_from_account_id is not None:
+            if payload.paid_from_account_id > 0:
+                from app.modules.accounting.models import Account
+                acc_res = await db.execute(
+                    select(Account).where(Account.tenant_id == tenant_id, Account.id == payload.paid_from_account_id)
+                )
+                paid_from_acc = acc_res.scalar_one_or_none()
+            else:
+                paid_from_acc = None
+
+        if payload.payment_status is not None or payload.paid_amount is not None or payload.paid_from_account_id is not None:
             target_code = payload.payment_status or p.payment_status
             resolved_code, acc_behavior = await PaymentStatusService.resolve_behavior(
                 db, tenant_id, target_code
             )
-            if acc_behavior == "paid":
-                new_paid = total_amount
-                new_due = 0.0
-            elif acc_behavior == "unpaid" and (payload.paid_amount is None or payload.paid_amount <= 0):
+            if acc_behavior == "unpaid" and (payload.paid_amount is None or float(payload.paid_amount) <= 0):
                 new_paid = 0.0
                 new_due = total_amount
+                p.paid_from_account_id = None
+                p.payment_status = resolved_code
             else:
-                req_paid = float(payload.paid_amount) if payload.paid_amount is not None else float(p.paid_amount or 0.0)
-                new_paid = min(max(0.0, req_paid), total_amount)
-                new_due = max(0.0, total_amount - new_paid)
+                if payload.paid_amount is not None:
+                    req_paid = float(payload.paid_amount)
+                elif acc_behavior == "paid":
+                    req_paid = total_amount
+                else:
+                    req_paid = float(p.paid_amount or 0.0)
+                new_paid = round(min(max(0.0, req_paid), total_amount), 2)
+                new_due = round(max(0.0, total_amount - new_paid), 2)
+                p.paid_from_account_id = paid_from_acc.id if (paid_from_acc and new_paid > 0) else (p.paid_from_account_id if new_paid > 0 else None)
+                if new_paid <= 0:
+                    p.payment_status = "unpaid"
+                elif new_due > 0:
+                    p.payment_status = "partial" if resolved_code in ("paid", "unpaid", "partial") else resolved_code
+                else:
+                    p.payment_status = resolved_code
 
-            p.payment_status = resolved_code
             p.paid_amount = round(new_paid, 2)
             p.balance_due = round(new_due, 2)
 
@@ -634,6 +731,7 @@ class PurchaseService:
         await db.flush()
 
         # Re-post Double-Entry Accounting Journal Voucher to reflect updated Payment Status
+        posted_jv = None
         try:
             from app.modules.accounting.services import AccountingService
             from app.modules.accounting.posting import AccountingPostingEngine
@@ -646,7 +744,7 @@ class PurchaseService:
                 source_id=p.id,
                 reason=f"Purchase bill {p.invoice_number} updated (Payment Status: {p.payment_status})",
             )
-            await AccountingPostingEngine.post_purchase_invoice(db, tenant_id, p, user_id)
+            posted_jv = await AccountingPostingEngine.post_purchase_invoice(db, tenant_id, p, user_id)
         except Exception as e:
             print(f"[ACCOUNTING UPDATE WARNING] Failed to re-post purchase voucher {p.invoice_number}: {e}")
 
@@ -656,7 +754,11 @@ class PurchaseService:
         resp = PurchaseResponse.model_validate(p)
         resp.branch_name = p.branch.name if p.branch else None
         resp.supplier_name = p.supplier.company_name if p.supplier else None
+        resp.paid_from_account_name = paid_from_acc.name if (paid_from_acc and p.paid_from_account_id) else None
+        resp.paid_from_account_code = paid_from_acc.code if (paid_from_acc and p.paid_from_account_id) else None
+        resp.journal_entry_number = posted_jv.entry_number if posted_jv else None
         resp.items_count = len(p.items) if p.items else 0
+        resp.total_qty = sum(float(i.quantity or 0.0) for i in p.items) if p.items else 0.0
         return resp
 
     @staticmethod
@@ -738,27 +840,52 @@ class PurchaseService:
         return {"message": f"Purchase bill '{inv_num}' cancelled and stock reversed successfully."}
 
     @staticmethod
+    async def _generate_return_number(db: AsyncSession, tenant_id: int) -> str:
+        prefix = f"PRN-{datetime.now(timezone.utc).strftime('%Y%m')}-"
+        cnt_res = await db.execute(
+            select(func.count(PurchaseReturn.id)).where(
+                PurchaseReturn.tenant_id == tenant_id,
+                PurchaseReturn.return_number.like(f"{prefix}%"),
+            )
+        )
+        seq = (cnt_res.scalar() or 0) + 1
+        while True:
+            candidate = f"{prefix}{seq:04d}"
+            exists = (
+                await db.execute(
+                    select(PurchaseReturn.id).where(
+                        PurchaseReturn.tenant_id == tenant_id,
+                        PurchaseReturn.return_number == candidate,
+                    )
+                )
+            ).scalar_one_or_none()
+            if not exists:
+                return candidate
+            seq += 1
+
+    @staticmethod
     async def return_purchase(
         db: AsyncSession,
         tenant_id: int,
         purchase_id: int,
         user_id: int,
         reason: Optional[str] = "Goods Returned to Supplier / Debit Note",
-        refund_payment_method: Optional[str] = "cash",
+        refund_payment_method: Optional[str] = "credit",
+        refund_account_id: Optional[int] = None,
+        notes: Optional[str] = None,
+        return_items: Optional[List[PurchaseReturnItemInput]] = None,
     ) -> Purchase:
         """
-        Process full return to supplier (Debit Note):
-        1. Validates purchase bill state (cannot return already returned or cancelled bill).
-        2. Deducts returned stock from BranchStock and writes immutable StockMovement (PURCHASE_RETURN).
-        3. Reverses supplier payable balance.
-        4. Updates purchase status to 'returned'.
-        5. Auto-posts balanced Debit Note Journal Voucher (IFRS / IAS-2).
+        Process partial or full item-level return to supplier (Debit Note):
+        - Example: 100 items received, 80 kept, 20 returned -> deducts 20 from Warehouse stock,
+          calculates return amount (20 * unit_cost), creates a PurchaseReturn (PRN) record,
+          updates Supplier Khata payable / refund account, and posts a balanced Double-Entry Debit Note JV.
         """
         stmt = (
             select(Purchase)
             .options(
                 joinedload(Purchase.supplier),
-                selectinload(Purchase.items),
+                selectinload(Purchase.items).joinedload(PurchaseItem.product),
                 joinedload(Purchase.branch),
             )
             .where(Purchase.tenant_id == tenant_id, Purchase.id == purchase_id)
@@ -772,14 +899,94 @@ class PurchaseService:
             )
 
         if p.status == "returned":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This purchase bill has already been returned.")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="All quantities on this purchase bill have already been returned.")
         if p.status == "cancelled":
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Cancelled purchase bills cannot be returned.")
 
         now = datetime.now(timezone.utc)
+        item_map = {item.id: item for item in p.items}
+        prod_item_map = {item.product_id: item for item in p.items}
 
-        # 1. Deduct branch stocks & add immutable StockMovements
-        for item in p.items:
+        # Build list of (PurchaseItem, return_qty, return_unit_cost)
+        lines_to_return: List[Tuple[PurchaseItem, float, float]] = []
+        if return_items and len(return_items) > 0:
+            for ri in return_items:
+                if float(ri.quantity or 0) <= 0:
+                    continue
+                target_item = None
+                if ri.purchase_item_id and ri.purchase_item_id in item_map:
+                    target_item = item_map[ri.purchase_item_id]
+                elif ri.product_id in prod_item_map:
+                    target_item = prod_item_map[ri.product_id]
+                if not target_item:
+                    continue
+                already_ret = float(getattr(target_item, "returned_quantity", 0.0) or 0.0)
+                max_returnable = max(0.0, float(target_item.quantity) - already_ret)
+                ret_q = min(float(ri.quantity), max_returnable)
+                if ret_q <= 0:
+                    continue
+                u_cost = float(ri.unit_cost) if ri.unit_cost is not None and ri.unit_cost >= 0 else float(target_item.unit_cost)
+                lines_to_return.append((target_item, ret_q, u_cost))
+        else:
+            # Default: return all remaining unreturned quantities
+            for item in p.items:
+                already_ret = float(getattr(item, "returned_quantity", 0.0) or 0.0)
+                rem_q = max(0.0, float(item.quantity) - already_ret)
+                if rem_q > 0:
+                    lines_to_return.append((item, rem_q, float(item.unit_cost)))
+
+        if not lines_to_return:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please enter a valid return quantity greater than 0 (not exceeding purchased quantity).",
+            )
+
+        return_number = await PurchaseService._generate_return_number(db, tenant_id)
+        total_ret_qty = 0.0
+        total_ret_amount = 0.0
+
+        pr_record = PurchaseReturn(
+            tenant_id=tenant_id,
+            purchase_id=p.id,
+            branch_id=p.branch_id,
+            supplier_id=p.supplier_id,
+            return_number=return_number,
+            return_date=now.date(),
+            total_qty=0.0,
+            total_amount=0.0,
+            refund_method=refund_payment_method or "credit",
+            refund_account_id=refund_account_id if refund_account_id and refund_account_id > 0 else None,
+            reason=reason,
+            notes=notes,
+            created_by_id=user_id,
+        )
+        db.add(pr_record)
+        await db.flush()
+
+        # 1. Deduct warehouse stock & record PurchaseReturnItem + StockMovement
+        for item, ret_q, u_cost in lines_to_return:
+            factor = max(1.0, float(item.conversion_factor or 1.0))
+            base_ret_q = round(ret_q * factor, 2)
+            line_ret_cost = round(ret_q * u_cost, 2)
+
+            item.returned_quantity = round(float(getattr(item, "returned_quantity", 0.0) or 0.0) + ret_q, 2)
+            total_ret_qty += ret_q
+            total_ret_amount += line_ret_cost
+
+            pr_item = PurchaseReturnItem(
+                tenant_id=tenant_id,
+                purchase_return_id=pr_record.id,
+                purchase_item_id=item.id,
+                product_id=item.product_id,
+                unit_name=item.unit_name,
+                quantity=ret_q,
+                conversion_factor=factor,
+                total_base_quantity=base_ret_q,
+                unit_cost=u_cost,
+                total_cost=line_ret_cost,
+            )
+            db.add(pr_item)
+
             bs_res = await db.execute(
                 select(BranchStock).where(
                     BranchStock.tenant_id == tenant_id,
@@ -789,59 +996,382 @@ class PurchaseService:
             )
             bs = bs_res.scalar_one_or_none()
             if bs:
-                bs.quantity = max(0.0, float(bs.quantity) - float(item.total_base_quantity))
+                bs.quantity = max(0.0, float(bs.quantity) - base_ret_q)
                 bs.updated_at = now
                 new_bal = float(bs.quantity)
             else:
                 new_bal = 0.0
 
-            # Write purchase return movement
             ret_move = StockMovement(
                 tenant_id=tenant_id,
                 branch_id=p.branch_id,
                 product_id=item.product_id,
                 movement_type="PURCHASE_RETURN",
-                quantity=-float(item.total_base_quantity),
+                quantity=-base_ret_q,
                 balance_after=new_bal,
-                unit_cost=float(item.unit_cost),
-                reference_type="purchase",
-                reference_id=p.id,
-                notes=f"Debit Note / Return to {p.supplier.company_name if p.supplier else 'Supplier'} (#{p.invoice_number}): {reason}",
+                unit_cost=u_cost,
+                reference_type="purchase_return",
+                reference_id=pr_record.id,
+                notes=f"Purchase Return {return_number} (Bill #{p.invoice_number}) from Warehouse '{p.branch.name if p.branch else ''}': {reason}",
             )
             db.add(ret_move)
 
-        # 2. Reverse Supplier Payable Balance
-        if float(p.balance_due) > 0 and p.supplier:
-            p.supplier.current_balance = max(0.0, float(p.supplier.current_balance) - float(p.balance_due))
-            p.supplier.updated_at = now
+        total_ret_amount = round(total_ret_amount, 2)
+        pr_record.total_qty = round(total_ret_qty, 2)
+        pr_record.total_amount = total_ret_amount
 
-        # If paid amount and refund method is "credit" (supplier ledger credit):
-        if float(p.paid_amount) > 0 and refund_payment_method == "credit" and p.supplier:
-            p.supplier.current_balance = float(p.supplier.current_balance) - float(p.paid_amount)
-            p.supplier.updated_at = now
+        # 2. Adjust Purchase Balance Due & Supplier Payable Balance
+        # Reduce unpaid balance_due on the invoice first
+        old_balance_due = float(p.balance_due or 0.0)
+        balance_reduction = min(old_balance_due, total_ret_amount)
+        if balance_reduction > 0:
+            p.balance_due = round(max(0.0, old_balance_due - balance_reduction), 2)
 
-        # 3. Mark status as returned
-        p.status = "returned"
-        p.notes = (p.notes or "") + (f" | Debit Note: {reason}" if reason else " | Debit Note")
+        if (refund_payment_method or "credit") == "credit":
+            # Full returned amount reduces supplier khata balance
+            if p.supplier:
+                p.supplier.current_balance = round(float(p.supplier.current_balance or 0.0) - total_ret_amount, 2)
+                p.supplier.updated_at = now
+        else:
+            # Cash/Bank refund received: only unpaid portion reduces supplier khata
+            if balance_reduction > 0 and p.supplier:
+                p.supplier.current_balance = round(max(0.0, float(p.supplier.current_balance or 0.0) - balance_reduction), 2)
+                p.supplier.updated_at = now
+
+        # 3. Determine if all items on purchase bill are fully returned or partially returned
+        all_returned = all(
+            float(getattr(it, "returned_quantity", 0.0) or 0.0) >= float(it.quantity) - 0.001
+            for it in p.items
+        )
+        p.status = "returned" if all_returned else "partial_returned"
+        p.notes = (p.notes or "") + f" | {return_number}: Returned {total_ret_qty:g} qty (PKR {total_ret_amount:,.2f})"
         p.updated_at = now
 
-        # 4. Auto-post Debit Note Journal Voucher
+        # 4. Auto-post Debit Note Journal Voucher for the exact returned amount
         try:
+            from app.modules.accounting.services import AccountingService
             from app.modules.accounting.posting import AccountingPostingEngine
+            await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id, backfill=False)
             await AccountingPostingEngine.post_purchase_return(
                 db,
                 tenant_id,
-                p,
+                pr_record,
                 user_id=user_id,
-                reason=reason,
+                reason=f"{reason} (Bill: {p.invoice_number})",
                 refund_payment_method=refund_payment_method,
+                return_amount_override=total_ret_amount,
+                refund_account_id_override=pr_record.refund_account_id,
+                return_voucher_no=return_number,
             )
         except Exception as e:
-            print(f"[ACCOUNTING DEBIT NOTE WARNING] Failed to post debit note for {p.invoice_number}: {e}")
+            print(f"[ACCOUNTING DEBIT NOTE WARNING] Failed to post debit note for {return_number}: {e}")
 
         await db.commit()
         await db.refresh(p)
         return p
+
+    @staticmethod
+    async def create_standalone_purchase_return(
+        db: AsyncSession,
+        tenant_id: int,
+        user_id: int,
+        payload: StandalonePurchaseReturnCreate,
+    ) -> PurchaseReturnResponse:
+        """
+        Create a standalone Purchase Return / Debit Note from the dedicated Purchase Returns screen:
+        Allows returning any quantity of any product from a specific Warehouse / Branch to a Supplier,
+        or linking to an existing purchase bill.
+        """
+        if payload.purchase_id:
+            # Delegate to invoice-linked return and then return the latest PurchaseReturnResponse
+            await PurchaseService.return_purchase(
+                db,
+                tenant_id=tenant_id,
+                purchase_id=payload.purchase_id,
+                user_id=user_id,
+                reason=payload.reason,
+                refund_payment_method=payload.refund_method,
+                refund_account_id=payload.refund_account_id,
+                notes=payload.notes,
+                return_items=payload.items,
+            )
+            latest_pr = (
+                await db.execute(
+                    select(PurchaseReturn)
+                    .where(PurchaseReturn.tenant_id == tenant_id, PurchaseReturn.purchase_id == payload.purchase_id)
+                    .order_by(PurchaseReturn.id.desc())
+                    .limit(1)
+                )
+            ).scalar_one()
+            return await PurchaseService.get_purchase_return_detail(db, tenant_id, latest_pr.id)
+
+        # Validate Warehouse / Branch and Supplier
+        branch = (
+            await db.execute(select(Branch).where(Branch.tenant_id == tenant_id, Branch.id == payload.branch_id))
+        ).scalar_one_or_none()
+        if not branch:
+            raise HTTPException(status_code=404, detail="Selected Warehouse / Branch not found.")
+
+        supplier = (
+            await db.execute(select(Supplier).where(Supplier.tenant_id == tenant_id, Supplier.id == payload.supplier_id))
+        ).scalar_one_or_none()
+        if not supplier:
+            raise HTTPException(status_code=404, detail="Selected Supplier not found.")
+
+        now = datetime.now(timezone.utc)
+        return_number = await PurchaseService._generate_return_number(db, tenant_id)
+
+        pr_record = PurchaseReturn(
+            tenant_id=tenant_id,
+            purchase_id=None,
+            branch_id=branch.id,
+            supplier_id=supplier.id,
+            return_number=return_number,
+            return_date=payload.return_date or now.date(),
+            total_qty=0.0,
+            total_amount=0.0,
+            refund_method=payload.refund_method or "credit",
+            refund_account_id=payload.refund_account_id if payload.refund_account_id and payload.refund_account_id > 0 else None,
+            reason=payload.reason,
+            notes=payload.notes,
+            created_by_id=user_id,
+        )
+        db.add(pr_record)
+        await db.flush()
+
+        total_ret_qty = 0.0
+        total_ret_amount = 0.0
+
+        for ri in payload.items:
+            ret_q = float(ri.quantity or 0.0)
+            if ret_q <= 0:
+                continue
+            prod = (
+                await db.execute(select(Product).where(Product.tenant_id == tenant_id, Product.id == ri.product_id))
+            ).scalar_one_or_none()
+            if not prod:
+                raise HTTPException(status_code=404, detail=f"Product ID {ri.product_id} not found.")
+
+            factor = max(1.0, float(ri.conversion_factor or 1.0))
+            base_ret_q = round(ret_q * factor, 2)
+            u_cost = float(ri.unit_cost) if ri.unit_cost is not None and ri.unit_cost > 0 else float(prod.cost_price or 0.0)
+            line_cost = round(ret_q * u_cost, 2)
+
+            total_ret_qty += ret_q
+            total_ret_amount += line_cost
+
+            pr_item = PurchaseReturnItem(
+                tenant_id=tenant_id,
+                purchase_return_id=pr_record.id,
+                purchase_item_id=None,
+                product_id=prod.id,
+                unit_name=ri.unit_name or prod.base_unit or "Piece",
+                quantity=ret_q,
+                conversion_factor=factor,
+                total_base_quantity=base_ret_q,
+                unit_cost=u_cost,
+                total_cost=line_cost,
+            )
+            db.add(pr_item)
+
+            # Deduct from Warehouse BranchStock
+            bs = (
+                await db.execute(
+                    select(BranchStock).where(
+                        BranchStock.tenant_id == tenant_id,
+                        BranchStock.branch_id == branch.id,
+                        BranchStock.product_id == prod.id,
+                    )
+                )
+            ).scalar_one_or_none()
+            if bs:
+                bs.quantity = max(0.0, float(bs.quantity) - base_ret_q)
+                bs.updated_at = now
+                new_bal = float(bs.quantity)
+            else:
+                new_bal = 0.0
+
+            ret_move = StockMovement(
+                tenant_id=tenant_id,
+                branch_id=branch.id,
+                product_id=prod.id,
+                movement_type="PURCHASE_RETURN",
+                quantity=-base_ret_q,
+                balance_after=new_bal,
+                unit_cost=u_cost,
+                reference_type="purchase_return",
+                reference_id=pr_record.id,
+                notes=f"Direct Purchase Return {return_number} to {supplier.company_name} from Warehouse '{branch.name}': {payload.reason or ''}",
+            )
+            db.add(ret_move)
+
+        if total_ret_qty <= 0:
+            raise HTTPException(status_code=400, detail="Return quantity must be greater than 0.")
+
+        total_ret_amount = round(total_ret_amount, 2)
+        pr_record.total_qty = round(total_ret_qty, 2)
+        pr_record.total_amount = total_ret_amount
+
+        # Update Supplier Khata balance if refund method is credit
+        if (payload.refund_method or "credit") == "credit":
+            supplier.current_balance = round(float(supplier.current_balance or 0.0) - total_ret_amount, 2)
+            supplier.updated_at = now
+
+        # Auto-post Double-Entry Debit Note JV
+        try:
+            from app.modules.accounting.services import AccountingService
+            from app.modules.accounting.posting import AccountingPostingEngine
+            await AccountingService.ensure_tenant_coa_and_settings(db, tenant_id, backfill=False)
+            await AccountingPostingEngine.post_purchase_return(
+                db,
+                tenant_id,
+                pr_record,
+                user_id=user_id,
+                reason=payload.reason,
+                refund_payment_method=payload.refund_method,
+                return_amount_override=total_ret_amount,
+                refund_account_id_override=pr_record.refund_account_id,
+                return_voucher_no=return_number,
+            )
+        except Exception as e:
+            print(f"[ACCOUNTING DEBIT NOTE WARNING] Failed to post standalone debit note {return_number}: {e}")
+
+        await db.commit()
+        return await PurchaseService.get_purchase_return_detail(db, tenant_id, pr_record.id)
+
+    @staticmethod
+    async def list_purchase_returns(
+        db: AsyncSession,
+        tenant_id: int,
+        branch_id: Optional[int] = None,
+        supplier_id: Optional[int] = None,
+        search: Optional[str] = None,
+    ) -> List[PurchaseReturnResponse]:
+        stmt = (
+            select(PurchaseReturn)
+            .options(
+                joinedload(PurchaseReturn.branch),
+                joinedload(PurchaseReturn.supplier),
+                joinedload(PurchaseReturn.purchase),
+                joinedload(PurchaseReturn.refund_account),
+                selectinload(PurchaseReturn.items).joinedload(PurchaseReturnItem.product),
+            )
+            .where(PurchaseReturn.tenant_id == tenant_id)
+            .order_by(PurchaseReturn.return_date.desc(), PurchaseReturn.id.desc())
+        )
+        if branch_id:
+            stmt = stmt.where(PurchaseReturn.branch_id == branch_id)
+        if supplier_id:
+            stmt = stmt.where(PurchaseReturn.supplier_id == supplier_id)
+        if search:
+            s = f"%{search.strip().lower()}%"
+            stmt = stmt.where(
+                or_(
+                    func.lower(PurchaseReturn.return_number).ilike(s),
+                    func.lower(PurchaseReturn.reason).ilike(s),
+                )
+            )
+        res = await db.execute(stmt)
+        records = res.scalars().unique().all()
+
+        from app.modules.accounting.models import JournalEntry
+        pr_ids = [r.id for r in records]
+        jv_map = {}
+        if pr_ids:
+            jv_res = await db.execute(
+                select(JournalEntry.source_id, JournalEntry.entry_number).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.source_type == "purchase_return",
+                    JournalEntry.source_id.in_(pr_ids),
+                    JournalEntry.status == "posted",
+                )
+            )
+            for s_id, e_num in jv_res.all():
+                jv_map[s_id] = e_num
+
+        out: List[PurchaseReturnResponse] = []
+        for r in records:
+            out.append(PurchaseService._serialize_purchase_return(r, jv_map.get(r.id)))
+        return out
+
+    @staticmethod
+    async def get_purchase_return_detail(
+        db: AsyncSession,
+        tenant_id: int,
+        return_id: int,
+    ) -> PurchaseReturnResponse:
+        stmt = (
+            select(PurchaseReturn)
+            .options(
+                joinedload(PurchaseReturn.branch),
+                joinedload(PurchaseReturn.supplier),
+                joinedload(PurchaseReturn.purchase),
+                joinedload(PurchaseReturn.refund_account),
+                selectinload(PurchaseReturn.items).joinedload(PurchaseReturnItem.product),
+            )
+            .where(PurchaseReturn.tenant_id == tenant_id, PurchaseReturn.id == return_id)
+        )
+        r = (await db.execute(stmt)).scalar_one_or_none()
+        if not r:
+            raise HTTPException(status_code=404, detail="Purchase Return not found.")
+
+        from app.modules.accounting.models import JournalEntry
+        jv_num = (
+            await db.execute(
+                select(JournalEntry.entry_number).where(
+                    JournalEntry.tenant_id == tenant_id,
+                    JournalEntry.source_type == "purchase_return",
+                    JournalEntry.source_id == r.id,
+                    JournalEntry.status == "posted",
+                ).order_by(JournalEntry.id.desc()).limit(1)
+            )
+        ).scalar_one_or_none()
+
+        return PurchaseService._serialize_purchase_return(r, jv_num)
+
+    @staticmethod
+    def _serialize_purchase_return(r: PurchaseReturn, jv_num: Optional[str]) -> PurchaseReturnResponse:
+        items_out = []
+        for it in r.items or []:
+            items_out.append(
+                PurchaseReturnItemResponse(
+                    id=it.id,
+                    purchase_return_id=it.purchase_return_id,
+                    purchase_item_id=it.purchase_item_id,
+                    product_id=it.product_id,
+                    product_name=it.product.name if it.product else None,
+                    product_sku=it.product.sku if it.product else None,
+                    unit_name=it.unit_name,
+                    quantity=float(it.quantity),
+                    conversion_factor=float(it.conversion_factor),
+                    total_base_quantity=float(it.total_base_quantity),
+                    unit_cost=float(it.unit_cost),
+                    total_cost=float(it.total_cost),
+                )
+            )
+        return PurchaseReturnResponse(
+            id=r.id,
+            tenant_id=r.tenant_id,
+            purchase_id=r.purchase_id,
+            purchase_invoice_number=r.purchase.invoice_number if r.purchase else None,
+            branch_id=r.branch_id,
+            branch_name=r.branch.name if r.branch else None,
+            supplier_id=r.supplier_id,
+            supplier_name=r.supplier.company_name if r.supplier else None,
+            return_number=r.return_number,
+            return_date=r.return_date,
+            total_qty=float(r.total_qty),
+            total_amount=float(r.total_amount),
+            refund_method=r.refund_method,
+            refund_account_id=r.refund_account_id,
+            refund_account_name=r.refund_account.name if r.refund_account else None,
+            refund_account_code=r.refund_account.code if r.refund_account else None,
+            journal_entry_number=jv_num,
+            reason=r.reason,
+            notes=r.notes,
+            created_at=r.created_at,
+            items=items_out,
+        )
 
 
 
