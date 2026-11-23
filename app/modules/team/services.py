@@ -953,6 +953,55 @@ class TeamService:
                 detail="Access denied. You do not have permission to delete purchases.",
             )
 
+    @staticmethod
+    async def verify_purchase_return_view_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to view purchase returns."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {
+            "*",
+            "purchase_returns:view",
+            "purchase_returns:create",
+            "purchase_returns:edit",
+            "purchase_returns:delete",
+            "purchase_returns:manage",
+            "purchases:view",
+            "purchases:create",
+            "purchases:edit",
+            "purchases:manage",
+        }
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to view purchase returns.",
+            )
+
+    @staticmethod
+    async def verify_purchase_return_create_permission(
+        current_user: User,
+        tenant: Tenant,
+        db: AsyncSession,
+    ) -> None:
+        """Check if user has permission to create purchase returns / debit notes."""
+        perms = await TeamService.get_user_permissions_in_tenant(current_user, tenant.id, db)
+        allowed = {
+            "*",
+            "purchase_returns:create",
+            "purchase_returns:edit",
+            "purchase_returns:manage",
+            "purchases:create",
+            "purchases:edit",
+            "purchases:manage",
+        }
+        if not any(p in perms for p in allowed):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Access denied. You do not have permission to create purchase returns.",
+            )
+
     # ----------------------------------------------------
     # INVENTORY & STOCK PERMISSIONS
     # ----------------------------------------------------
@@ -1353,6 +1402,9 @@ class TeamService:
             "pos": "POS Counter Billing",
             "sales": "Sales & Delivery Challans",
             "purchase": "Purchasing & Vendor Bills",
+            "purchases": "Purchases & GRN",
+            "purchase_returns": "Purchase Returns & Debit Notes",
+            "payment_statuses": "Payment Statuses",
             "inventory": "Inventory & Godowns",
             "accounting": "Accounts & General Ledger",
             "parties": "Customers & Suppliers (Khata)",
@@ -1370,7 +1422,24 @@ class TeamService:
 
         result = []
         # Maintain sensible business order (active modules first)
-        order = ["users", "roles", "categories", "brands", "products", "pos", "sales", "purchase", "inventory", "accounting", "parties", "reports", "settings"]
+        order = [
+            "users",
+            "roles",
+            "categories",
+            "brands",
+            "products",
+            "pos",
+            "sales",
+            "purchase",
+            "purchases",
+            "purchase_returns",
+            "payment_statuses",
+            "inventory",
+            "accounting",
+            "parties",
+            "reports",
+            "settings",
+        ]
         for mod in order:
             if mod in groups_map:
                 result.append(

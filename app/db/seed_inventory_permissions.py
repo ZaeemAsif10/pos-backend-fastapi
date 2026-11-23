@@ -30,6 +30,58 @@ INVENTORY_PERMISSIONS = [
         "name": "Delete Purchases",
         "description": "Cancel or delete purchase bills and reverse stock",
     },
+
+    # Purchase Returns & Debit Notes Permissions
+    {
+        "module": "purchase_returns",
+        "code": "purchase_returns:view",
+        "name": "View Purchase Returns",
+        "description": "View purchase returns, debit notes, and returned warehouse quantities",
+    },
+    {
+        "module": "purchase_returns",
+        "code": "purchase_returns:create",
+        "name": "Add Purchase Returns",
+        "description": "Create and post purchase returns and supplier debit notes",
+    },
+    {
+        "module": "purchase_returns",
+        "code": "purchase_returns:edit",
+        "name": "Edit Purchase Returns",
+        "description": "Update purchase return notes and refund settlements",
+    },
+    {
+        "module": "purchase_returns",
+        "code": "purchase_returns:delete",
+        "name": "Delete Purchase Returns",
+        "description": "Cancel or void purchase return debit notes",
+    },
+
+    # Payment Statuses Permissions
+    {
+        "module": "payment_statuses",
+        "code": "payment_statuses:view",
+        "name": "View Payment Statuses",
+        "description": "View configurable payment status options and accounting effects",
+    },
+    {
+        "module": "payment_statuses",
+        "code": "payment_statuses:create",
+        "name": "Add Payment Statuses",
+        "description": "Create new custom payment status options",
+    },
+    {
+        "module": "payment_statuses",
+        "code": "payment_statuses:edit",
+        "name": "Edit Payment Statuses",
+        "description": "Update payment status labels, colors, and accounting behavior",
+    },
+    {
+        "module": "payment_statuses",
+        "code": "payment_statuses:delete",
+        "name": "Delete Payment Statuses",
+        "description": "Delete custom payment status options",
+    },
     
     # Inventory & Live Stock
     {

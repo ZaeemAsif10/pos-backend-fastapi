@@ -161,7 +161,7 @@ async def return_purchase(
     Deducts returned qty from warehouse stock, adjusts supplier payable / refund account, and auto-posts balanced Debit Note JV.
     """
     tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
-    await TeamService.verify_purchase_create_permission(current_user, tenant, db)
+    await TeamService.verify_purchase_return_create_permission(current_user, tenant, db)
     reason = payload.reason if payload and payload.reason else "Goods Returned to Supplier / Debit Note"
     refund_method = payload.refund_payment_method if payload and payload.refund_payment_method else "credit"
     refund_account_id = payload.refund_account_id if payload else None
@@ -195,7 +195,7 @@ async def list_purchase_returns(
     db: AsyncSession = Depends(get_db),
 ):
     tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
-    await TeamService.verify_purchase_view_permission(current_user, tenant, db)
+    await TeamService.verify_purchase_return_view_permission(current_user, tenant, db)
     return await PurchaseService.list_purchase_returns(
         db, tenant.id, branch_id=branch_id, supplier_id=supplier_id, search=search
     )
@@ -214,7 +214,7 @@ async def create_purchase_return(
     db: AsyncSession = Depends(get_db),
 ):
     tenant = await TeamService.resolve_active_tenant(current_user, db, requested_tenant_id=tenant_id)
-    await TeamService.verify_purchase_create_permission(current_user, tenant, db)
+    await TeamService.verify_purchase_return_create_permission(current_user, tenant, db)
     return await PurchaseService.create_standalone_purchase_return(db, tenant.id, current_user.id, payload)
 
 
