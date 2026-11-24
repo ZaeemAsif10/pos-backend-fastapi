@@ -586,7 +586,7 @@ class PurchaseService:
                     branch_id=payload.branch_id,
                     product_id=ci["product"].id,
                     quantity=ci["base_qty"],
-                    reorder_point=getattr(ci["product"], "min_stock_alert", 5),
+                    reorder_point=ci["product"].reorder_level if ci["product"].reorder_level is not None else 5,
                 )
                 db.add(bs)
                 await db.flush()
@@ -1429,7 +1429,12 @@ class InventoryService:
         results = []
         for prod, bs, br in rows:
             cur_stock = float(bs.quantity)
-            reorder = float(bs.reorder_point or prod.min_stock_alert or 10.0)
+            if bs.reorder_point is not None:
+                reorder = float(bs.reorder_point)
+            elif prod.reorder_level is not None:
+                reorder = float(prod.reorder_level)
+            else:
+                reorder = 5.0
 
             if cur_stock <= 0:
                 status_label = "Out of Stock"

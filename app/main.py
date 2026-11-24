@@ -65,22 +65,34 @@ async def integrity_exception_handler(_request: Request, exc: IntegrityError):
     return JSONResponse(status_code=code, content={"detail": detail})
 
 
+def _cors_headers(request: Request) -> dict[str, str]:
+    origin = request.headers.get("origin")
+    if origin and ("*" in settings.CORS_ORIGINS or origin in settings.CORS_ORIGINS):
+        return {
+            "Access-Control-Allow-Origin": origin,
+            "Access-Control-Allow-Credentials": "true",
+        }
+    return {}
+
+
 @app.exception_handler(SQLAlchemyError)
-async def sqlalchemy_exception_handler(_request: Request, exc: SQLAlchemyError):
+async def sqlalchemy_exception_handler(request: Request, exc: SQLAlchemyError):
     """Return a clean JSON message for database errors."""
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": f"Database operation error: {str(exc).splitlines()[0][:180]}"},
+        headers=_cors_headers(request),
     )
 
 
 @app.exception_handler(Exception)
-async def global_exception_handler(_request: Request, exc: Exception):
+async def global_exception_handler(request: Request, exc: Exception):
     """Catch any unhandled exception and return a structured user-friendly JSON error."""
     err_msg = str(exc).strip() or exc.__class__.__name__
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content={"detail": f"Server error while processing your request: {err_msg}"},
+        headers=_cors_headers(request),
     )
 
 
