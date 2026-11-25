@@ -1209,6 +1209,15 @@ class TeamService:
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="A user with this mobile number or email already exists in your business team.",
                 )
+            if user.is_superadmin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Platform administrator accounts cannot be added as business staff.",
+                )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this mobile number or email already exists. Please use a unique email or mobile number for this staff member.",
+            )
         else:
             # Create new user identity
             user = User(
@@ -1320,7 +1329,35 @@ class TeamService:
         if payload.is_active is not None and not membership.is_owner:
             membership.is_active = payload.is_active
 
-        # Update User fields if provided
+        # Update User fields if provided (guard global identity against cross-tenant / superadmin takeover)
+        if (payload.full_name or payload.password) and membership.user:
+            if membership.user.is_superadmin and not current_user.is_superadmin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Platform administrator credentials cannot be modified from a business team.",
+                )
+            other_mem_res = await db.execute(
+                select(TenantUser.id).where(
+                    TenantUser.user_id == membership.user_id,
+                    TenantUser.tenant_id != tenant.id,
+                ).limit(1)
+            )
+            if other_mem_res.scalar_one_or_none() is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Cannot modify profile or password for a user belonging to multiple businesses.",
+                )
+            if (
+                membership.is_owner
+                and payload.password
+                and current_user.id != membership.user_id
+                and not current_user.is_superadmin
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only the business owner can reset their own password.",
+                )
+
         if payload.full_name and membership.user:
             membership.user.full_name = payload.full_name
 
